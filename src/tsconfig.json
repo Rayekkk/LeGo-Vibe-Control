@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM"],
+    "jsx": "react",
+    "jsxFactory": "SP_REACT.createElement",
+    "jsxFragmentFactory": "SP_REACT.Fragment",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "moduleResolution": "node",
+    "outDir": "../dist",
+    "declaration": false,
+    "skipLibCheck": true
+  },
+  "include": ["*.tsx", "*.ts"]
+}

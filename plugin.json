@@ -1,0 +1,11 @@
+{
+  "api_version": 1,
+  "name": "Ally Vibe Control",
+  "author": "piyush",
+  "flags": ["root"],
+  "publish": {
+    "tags": ["utilities", "hardware", "controller"],
+    "description": "Control vibration intensity on the ROG Xbox Ally X. Writes to the asus_ally_hid sysfs endpoint and persists the setting across reboots.",
+    "image": "https://raw.githubusercontent.com/your-user/ally-vibe-control/main/assets/preview.png"
+  }
+}

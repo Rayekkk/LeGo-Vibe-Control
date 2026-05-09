@@ -1,0 +1,10 @@
+{
+  "name": "ally-vibe-control",
+  "version": "1.0.0",
+  "description": "Vibration intensity control for the ROG Xbox Ally X",
+  "scripts": {
+    "build": "pnpm run build:frontend",
+    "build:frontend": "cd src && pnpm i && pnpm run build"
+  },
+  "license": "MIT"
+}
