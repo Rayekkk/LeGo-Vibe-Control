@@ -111,7 +111,8 @@ export default {
   input: "index.tsx",
   output: {
     file: "../dist/index.js",
-    format: "esm",
+    format: "iife",
+    name: "AllyVibeControl",
     exports: "default",
   },
   // react/react-dom → window.SP_REACT/SP_REACTDOM (reactShim)
