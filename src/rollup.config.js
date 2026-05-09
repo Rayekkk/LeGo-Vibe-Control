@@ -111,9 +111,7 @@ export default {
   input: "index.tsx",
   output: {
     file: "../dist/index.js",
-    format: "iife",
-    name: "AllyVibeControl",
-    exports: "default",
+    format: "es",
   },
   // react/react-dom → window.SP_REACT/SP_REACTDOM (reactShim)
   // @decky/ui → runtime DFL global (dflShim)
