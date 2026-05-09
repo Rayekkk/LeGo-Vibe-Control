@@ -137,13 +137,13 @@ class Plugin:
         left = _clamp(int(left))
         right = _clamp(int(right))
 
+        # Save the user's intent before writing to hardware so the preference
+        # persists even when the driver is temporarily unavailable.
+        settings.setSetting(SETTINGS_KEY_LEFT, left)
+        settings.setSetting(SETTINGS_KEY_RIGHT, right)
+        settings.commit()
+
         ok = _write_intensity(left, right)
-
-        if ok:
-            settings.setSetting(SETTINGS_KEY_LEFT, left)
-            settings.setSetting(SETTINGS_KEY_RIGHT, right)
-            settings.commit()
-
         return {"success": ok, "left": left, "right": right}
 
     async def set_intensity_linked(self, value: int) -> dict:

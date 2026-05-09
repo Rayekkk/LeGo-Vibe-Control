@@ -141,11 +141,9 @@ const AllyVibeControl = () => {
     setApplying(true);
     try {
       const res = await setIntensityLinked(val);
-      if (res.success) {
-        _cache = { left: res.left, right: res.right };
-        setLeftVal(res.left);
-        setRightVal(res.right);
-      }
+      _cache = { left: res.left, right: res.right };
+      setLeftVal(res.left);
+      setRightVal(res.right);
     } finally {
       setApplying(false);
     }
@@ -155,11 +153,9 @@ const AllyVibeControl = () => {
     setApplying(true);
     try {
       const res = await setIntensity(l, r);
-      if (res.success) {
-        _cache = { left: res.left, right: res.right };
-        setLeftVal(res.left);
-        setRightVal(res.right);
-      }
+      _cache = { left: res.left, right: res.right };
+      setLeftVal(res.left);
+      setRightVal(res.right);
     } finally {
       setApplying(false);
     }
@@ -169,12 +165,10 @@ const AllyVibeControl = () => {
     setApplying(true);
     try {
       const res = await resetToDefault();
-      if (res.success) {
-        _cache = { left: res.left, right: res.right };
-        setLeftVal(res.left);
-        setRightVal(res.right);
-        setLinked(true);
-      }
+      _cache = { left: res.left, right: res.right };
+      setLeftVal(res.left);
+      setRightVal(res.right);
+      setLinked(true);
     } finally {
       setApplying(false);
     }
