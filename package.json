@@ -1,8 +1,8 @@
 {
-  "name": "ally-vibe-control",
-  "version": "1.0.2",
+  "name": "legion-vibe-control",
+  "version": "1.0.0",
   "type": "module",
-  "description": "Vibration intensity control for the ROG Xbox Ally X",
+  "description": "Vibration intensity control for the Lenovo Legion Go 2",
   "scripts": {
     "build": "pnpm run build:frontend",
     "build:frontend": "cd src && pnpm i && pnpm run build"

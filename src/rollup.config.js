@@ -14,7 +14,7 @@ function deckyManifest() {
     },
     load(id) {
       if (id === resolvedId)
-        return `export default ${JSON.stringify({ name: "Ally Vibe Control" })};`;
+        return `export default ${JSON.stringify({ name: "Legion Vibe Control" })};`;
     },
   };
 }

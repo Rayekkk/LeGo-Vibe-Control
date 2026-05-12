@@ -7,39 +7,36 @@ import {
 } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
 
-// SP_REACT and SP_REACTDOM are globals injected by the Steam/Decky runtime.
-// We do NOT import react — that would leave an `import` statement in the bundle
-// which Decky loads as a plain script, not an ES module.
 declare const SP_REACT: any;
-const { useState, useRef, useEffect, useCallback } = SP_REACT;
+const { useState, useEffect, useCallback } = SP_REACT;
 
 // Module-level cache: survives component remounts within the same plugin session.
-// Decky unmounts the panel component each time the user closes the QAM, so
-// useState(50) would re-initialize every visit without this cache.
-let _cache: { left: number; right: number } | null = null;
+let _cache: { level: number; leftEnabled: boolean; rightEnabled: boolean } | null = null;
+
+const LEVEL_LABELS = ["Off", "Low", "Medium", "High"];
 
 // ------------------------------------------------------------------ //
 // Backend callables
 // ------------------------------------------------------------------ //
 
-const getIntensity = callable<[], { left: number; right: number }>(
-  "get_intensity"
+const getSettings = callable<[], { level: number; left_enabled: boolean; right_enabled: boolean }>(
+  "get_settings"
 );
 
-const setIntensityLinked = callable<[value: number], { success: boolean; left: number; right: number }>(
-  "set_intensity_linked"
-);
-
-const setIntensity = callable<[left: number, right: number], { success: boolean; left: number; right: number }>(
+const setIntensity = callable<[level: number], { success: boolean; level: number }>(
   "set_intensity"
 );
 
-const resetToDefault = callable<[], { success: boolean; left: number; right: number }>(
+const setHandleEnabled = callable<[handle: string, enabled: boolean], { success: boolean; handle: string; enabled: boolean }>(
+  "set_handle_enabled"
+);
+
+const resetToDefault = callable<[], { success: boolean; level: number }>(
   "reset_to_default"
 );
 
-const getSysfsPath = callable<[], { path: string | null; found: boolean }>(
-  "get_sysfs_path"
+const getDriverStatus = callable<[], { found: boolean; paths: string[] }>(
+  "get_driver_status"
 );
 
 const testVibration = callable<[duration_ms: number], { success: boolean; error?: string }>(
@@ -100,36 +97,28 @@ const styles = {
 // Main component
 // ------------------------------------------------------------------ //
 
-const AllyVibeControl = () => {
-  const [leftVal, setLeftVal] = useState<number>(_cache?.left ?? 50);
-  const [rightVal, setRightVal] = useState<number>(_cache?.right ?? 50);
-  const [linked, setLinked] = useState<boolean>(
-    _cache ? _cache.left === _cache.right : true
-  );
-  const [sysfsPath, setSysfsPath] = useState<string | null>(null);
-  const [sysfsFound, setSysfsFound] = useState<boolean>(false);
-  // Skip loading spinner when we already have cached values to show immediately.
-  const [loading, setLoading] = useState<boolean>(_cache === null);
-  const [applying, setApplying] = useState<boolean>(false);
-  const [testing, setTesting] = useState<boolean>(false);
-  const linkedTimer = useRef<ReturnType<typeof setTimeout>>();
-  const splitTimer = useRef<ReturnType<typeof setTimeout>>();
+const LGoVibeControl = () => {
+  const [level,        setLevel]        = useState<number>(_cache?.level        ?? 2);
+  const [leftEnabled,  setLeftEnabled]  = useState<boolean>(_cache?.leftEnabled  ?? true);
+  const [rightEnabled, setRightEnabled] = useState<boolean>(_cache?.rightEnabled ?? true);
+  const [driverFound,  setDriverFound]  = useState<boolean>(false);
+  const [driverPaths,  setDriverPaths]  = useState<string[]>([]);
+  const [loading,      setLoading]      = useState<boolean>(_cache === null);
+  const [applying,     setApplying]     = useState<boolean>(false);
+  const [testing,      setTesting]      = useState<boolean>(false);
 
   useEffect(() => {
     const init = async () => {
       try {
-        const [intensity, sysfs] = await Promise.all([
-          getIntensity(),
-          getSysfsPath(),
-        ]);
-        _cache = { left: intensity.left, right: intensity.right };
-        setLeftVal(intensity.left);
-        setRightVal(intensity.right);
-        setLinked(intensity.left === intensity.right);
-        setSysfsPath(sysfs.path);
-        setSysfsFound(sysfs.found);
+        const [s, d] = await Promise.all([getSettings(), getDriverStatus()]);
+        _cache = { level: s.level, leftEnabled: s.left_enabled, rightEnabled: s.right_enabled };
+        setLevel(s.level);
+        setLeftEnabled(s.left_enabled);
+        setRightEnabled(s.right_enabled);
+        setDriverFound(d.found);
+        setDriverPaths(d.paths);
       } catch (e) {
-        console.error("[ally-vibe] init error", e);
+        console.error("[lgo2-vibe] init error", e);
       } finally {
         setLoading(false);
       }
@@ -137,44 +126,41 @@ const AllyVibeControl = () => {
     init();
   }, []);
 
-  const applyLinked = useCallback(async (val: number) => {
+  const handleLevelChange = useCallback(async (val: number) => {
     setApplying(true);
     try {
-      const res = await setIntensityLinked(val);
-      _cache = { left: res.left, right: res.right };
-      setLeftVal(res.left);
-      setRightVal(res.right);
+      const res = await setIntensity(val);
+      setLevel(res.level);
+      if (_cache) _cache.level = res.level;
     } finally {
       setApplying(false);
     }
   }, []);
 
-  const applySplit = useCallback(async (l: number, r: number) => {
-    setApplying(true);
-    try {
-      const res = await setIntensity(l, r);
-      _cache = { left: res.left, right: res.right };
-      setLeftVal(res.left);
-      setRightVal(res.right);
-    } finally {
-      setApplying(false);
-    }
+  const handleLeftToggle = useCallback(async (val: boolean) => {
+    setLeftEnabled(val);
+    if (_cache) _cache.leftEnabled = val;
+    await setHandleEnabled("left", val);
+  }, []);
+
+  const handleRightToggle = useCallback(async (val: boolean) => {
+    setRightEnabled(val);
+    if (_cache) _cache.rightEnabled = val;
+    await setHandleEnabled("right", val);
   }, []);
 
   const handleReset = useCallback(async () => {
     setApplying(true);
     try {
       const res = await resetToDefault();
-      _cache = { left: res.left, right: res.right };
-      setLeftVal(res.left);
-      setRightVal(res.right);
-      setLinked(true);
+      setLevel(res.level);
+      if (_cache) _cache.level = res.level;
     } finally {
       setApplying(false);
     }
   }, []);
 
-  const handleTestVibration = useCallback(async () => {
+  const handleTest = useCallback(async () => {
     setTesting(true);
     try {
       await testVibration(500);
@@ -182,13 +168,6 @@ const AllyVibeControl = () => {
       setTesting(false);
     }
   }, []);
-
-  const handleLinkedChange = useCallback((val: boolean) => {
-    setLinked(val);
-    if (val && leftVal !== rightVal) {
-      void applySplit(leftVal, leftVal);
-    }
-  }, [leftVal, rightVal, applySplit]);
 
   if (loading) {
     return (
@@ -205,19 +184,19 @@ const AllyVibeControl = () => {
       <PanelSection title="Driver Status">
         <PanelSectionRow>
           <div style={styles.statusRow}>
-            <div style={styles.dot(sysfsFound)} />
-            <span style={styles.statusText(sysfsFound)}>
-              {sysfsFound
-                ? sysfsPath ?? "Found"
-                : "asus_ally_hid driver not found"}
+            <div style={styles.dot(driverFound)} />
+            <span style={styles.statusText(driverFound)}>
+              {driverFound
+                ? driverPaths[0] ?? "hid-lenovo-go found"
+                : "hid-lenovo-go driver not found"}
             </span>
           </div>
         </PanelSectionRow>
-        {!sysfsFound && (
+        {!driverFound && (
           <PanelSectionRow>
             <div style={styles.warningBox}>
-              The asus_ally_hid sysfs endpoint was not detected. Make sure your
-              kernel includes the driver (SteamOS 3.7+ on Ally hardware).
+              The hid-lenovo-go sysfs endpoint was not detected. Requires Linux
+              7.1+ with the hid-lenovo-go module loaded on Legion Go 2 hardware.
             </div>
           </PanelSectionRow>
         )}
@@ -225,87 +204,57 @@ const AllyVibeControl = () => {
 
       <PanelSection title="Vibration Intensity">
         <PanelSectionRow>
-          <ToggleField
-            label="Link both motors"
-            description="Control left and right motors together"
-            checked={linked}
-            onChange={handleLinkedChange}
+          <SliderField
+            label="Intensity"
+            description={
+              <span>
+                Level: <span style={styles.valueTag}>{LEVEL_LABELS[level]}</span>
+              </span>
+            }
+            value={level}
+            min={0}
+            max={3}
+            step={1}
+            notchCount={4}
+            notchLabels={[
+              { notchIndex: 0, label: "Off" },
+              { notchIndex: 1, label: "Low" },
+              { notchIndex: 2, label: "Med" },
+              { notchIndex: 3, label: "High" },
+            ]}
+            disabled={applying}
+            onChange={(val: number) => {
+              setLevel(val);
+              void handleLevelChange(val);
+            }}
           />
         </PanelSectionRow>
+      </PanelSection>
 
-        {linked ? (
-          <PanelSectionRow>
-            <SliderField
-              label="Intensity"
-              description={
-                <span>
-                  Both motors: <span style={styles.valueTag}>{leftVal}%</span>
-                </span>
-              }
-              value={leftVal}
-              min={0}
-              max={100}
-              step={5}
-              disabled={applying}
-              onChange={(val: number) => {
-                setLeftVal(val);
-                setRightVal(val);
-                clearTimeout(linkedTimer.current);
-                linkedTimer.current = setTimeout(() => void applyLinked(val), 200);
-              }}
-            />
-          </PanelSectionRow>
-        ) : (
-          <>
-            <PanelSectionRow>
-              <SliderField
-                label="Left motor"
-                description={
-                  <span>
-                    Left grip: <span style={styles.valueTag}>{leftVal}%</span>
-                  </span>
-                }
-                value={leftVal}
-                min={0}
-                max={100}
-                step={5}
-                disabled={applying}
-                onChange={(val: number) => {
-                  setLeftVal(val);
-                  clearTimeout(splitTimer.current);
-                  splitTimer.current = setTimeout(() => void applySplit(val, rightVal), 200);
-                }}
-              />
-            </PanelSectionRow>
-            <PanelSectionRow>
-              <SliderField
-                label="Right motor"
-                description={
-                  <span>
-                    Right grip: <span style={styles.valueTag}>{rightVal}%</span>
-                  </span>
-                }
-                value={rightVal}
-                min={0}
-                max={100}
-                step={5}
-                disabled={applying}
-                onChange={(val: number) => {
-                  setRightVal(val);
-                  clearTimeout(splitTimer.current);
-                  splitTimer.current = setTimeout(() => void applySplit(leftVal, val), 200);
-                }}
-              />
-            </PanelSectionRow>
-          </>
-        )}
+      <PanelSection title="Controllers">
+        <PanelSectionRow>
+          <ToggleField
+            label="Left controller rumble"
+            description="Enable vibration on left handle"
+            checked={leftEnabled}
+            onChange={handleLeftToggle}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Right controller rumble"
+            description="Enable vibration on right handle"
+            checked={rightEnabled}
+            onChange={handleRightToggle}
+          />
+        </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Actions">
         <PanelSectionRow>
           <ButtonItem
             layout="below"
-            onClick={handleTestVibration}
+            onClick={handleTest}
             disabled={applying || testing}
           >
             {testing ? "Vibrating..." : "Test Vibration (0.5s)"}
@@ -317,25 +266,7 @@ const AllyVibeControl = () => {
             onClick={handleReset}
             disabled={applying || testing}
           >
-            Reset to 50% (default)
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            onClick={() => void applySplit(0, 0)}
-            disabled={applying || testing}
-          >
-            Disable vibration (0%)
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            onClick={() => void applyLinked(100)}
-            disabled={applying || testing}
-          >
-            Full intensity (100%)
+            Reset to Medium (default)
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
@@ -343,10 +274,9 @@ const AllyVibeControl = () => {
       <PanelSection title="Notes">
         <PanelSectionRow>
           <div style={styles.warningBox}>
-            Trigger (impulse) vibration cannot be controlled via sysfs at this
-            time — this is a known kernel limitation tracked in Valve issue
-            #12673. Only the grip motors are affected by these sliders.
-            Settings persist across reboots.
+            Intensity maps to driver levels: Off / Low / Medium / High.
+            Per-handle toggles write to left_handle/rumble_notification and
+            right_handle/rumble_notification. Settings persist across reboots.
           </div>
         </PanelSectionRow>
       </PanelSection>
@@ -360,10 +290,14 @@ const AllyVibeControl = () => {
 
 export default definePlugin(() => {
   return {
-    name: "Ally Vibe Control",
-    titleView: <span>Ally Vibe Control</span>,
-    content: <AllyVibeControl />,
-    icon: <span>📳</span>,
+    name: "Legion Vibe Control",
+    titleView: <span>Legion Vibe Control</span>,
+    content: <LGoVibeControl />,
+    icon: (
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style={{ width: "1em", height: "1em" }}>
+        <path d="M0 15h2V9H0v6zm3 2h2V7H3v10zm19-8v6h2V9h-2zm-3 8h2V7h-2v10zm-7-1c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm0-8c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z" />
+      </svg>
+    ),
     onDismount() {},
   };
 });
