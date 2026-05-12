@@ -1,4 +1,4 @@
-# Legion Vibe Control
+# LeGo2 Vibe Control
 
 A [Decky Loader](https://decky.xyz) plugin for the **Lenovo Legion Go 2** that lets you control how hard the grip motors vibrate — or turn them off entirely.
 
