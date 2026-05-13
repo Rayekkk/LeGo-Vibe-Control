@@ -1,11 +1,11 @@
 {
   "api_version": 1,
-  "name": "LeGo2 Vibe Control",
-  "author": "piyush",
+  "name": "LeGo Vibe Control",
+  "author": "Rayek",
   "flags": ["root"],
   "publish": {
     "tags": ["utilities", "hardware", "controller"],
-    "description": "Control vibration intensity on the Lenovo Legion Go 2. Writes to the hid_legion_go sysfs endpoint and persists the setting across reboots.",
+    "description": "Control vibration intensity and mode on the Lenovo Legion Go 2. Uses the hid-lenovo-go kernel driver (Kernel 6.18+ / SteamOS 3.8+) and persists settings across reboots.",
     "image": ""
   }
 }

@@ -11,15 +11,16 @@ declare const SP_REACT: any;
 const { useState, useEffect, useCallback } = SP_REACT;
 
 // Module-level cache: survives component remounts within the same plugin session.
-let _cache: { level: number; leftEnabled: boolean; rightEnabled: boolean } | null = null;
+let _cache: { level: number; leftEnabled: boolean; rightEnabled: boolean; mode: number } | null = null;
 
 const LEVEL_LABELS = ["Off", "Low", "Medium", "High"];
+const MODE_LABELS  = ["FPS", "Racing", "Standard", "SPG", "RPG"];
 
 // ------------------------------------------------------------------ //
 // Backend callables
 // ------------------------------------------------------------------ //
 
-const getSettings = callable<[], { level: number; left_enabled: boolean; right_enabled: boolean }>(
+const getSettings = callable<[], { level: number; left_enabled: boolean; right_enabled: boolean; mode: number }>(
   "get_settings"
 );
 
@@ -27,15 +28,19 @@ const setIntensity = callable<[level: number], { success: boolean; level: number
   "set_intensity"
 );
 
+const setRumbleMode = callable<[mode_idx: number], { success: boolean; mode: number }>(
+  "set_rumble_mode"
+);
+
 const setHandleEnabled = callable<[handle: string, enabled: boolean], { success: boolean; handle: string; enabled: boolean }>(
   "set_handle_enabled"
 );
 
-const resetToDefault = callable<[], { success: boolean; level: number }>(
+const resetToDefault = callable<[], { success: boolean; level: number; mode: number }>(
   "reset_to_default"
 );
 
-const getDriverStatus = callable<[], { found: boolean; paths: string[] }>(
+const getDriverStatus = callable<[], { found: boolean; paths: string[]; method: string }>(
   "get_driver_status"
 );
 
@@ -91,6 +96,12 @@ const styles = {
     lineHeight: "1.5",
     marginTop: "4px",
   },
+  methodText: {
+    fontSize: "10px",
+    color: "rgba(255,255,255,0.4)",
+    fontFamily: "monospace",
+    marginTop: "2px",
+  },
 };
 
 // ------------------------------------------------------------------ //
@@ -99,24 +110,39 @@ const styles = {
 
 const LGoVibeControl = () => {
   const [level,        setLevel]        = useState<number>(_cache?.level        ?? 2);
+  const [mode,         setMode]         = useState<number>(_cache?.mode         ?? 0);
   const [leftEnabled,  setLeftEnabled]  = useState<boolean>(_cache?.leftEnabled  ?? true);
   const [rightEnabled, setRightEnabled] = useState<boolean>(_cache?.rightEnabled ?? true);
   const [driverFound,  setDriverFound]  = useState<boolean>(false);
   const [driverPaths,  setDriverPaths]  = useState<string[]>([]);
+  const [driverMethod, setDriverMethod] = useState<string>("");
   const [loading,      setLoading]      = useState<boolean>(_cache === null);
   const [applying,     setApplying]     = useState<boolean>(false);
   const [testing,      setTesting]      = useState<boolean>(false);
 
   useEffect(() => {
+    const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+      Promise.race([
+        p,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error(`backend timeout after ${ms}ms`)), ms)
+        ),
+      ]);
+
     const init = async () => {
       try {
-        const [s, d] = await Promise.all([getSettings(), getDriverStatus()]);
-        _cache = { level: s.level, leftEnabled: s.left_enabled, rightEnabled: s.right_enabled };
+        const [s, d] = await withTimeout(
+          Promise.all([getSettings(), getDriverStatus()]),
+          5000
+        );
+        _cache = { level: s.level, leftEnabled: s.left_enabled, rightEnabled: s.right_enabled, mode: s.mode ?? 0 };
         setLevel(s.level);
+        setMode(s.mode ?? 0);
         setLeftEnabled(s.left_enabled);
         setRightEnabled(s.right_enabled);
         setDriverFound(d.found);
         setDriverPaths(d.paths);
+        setDriverMethod(d.method ?? "");
       } catch (e) {
         console.error("[lgo2-vibe] init error", e);
       } finally {
@@ -132,6 +158,18 @@ const LGoVibeControl = () => {
       const res = await setIntensity(val);
       setLevel(res.level);
       if (_cache) _cache.level = res.level;
+    } finally {
+      setApplying(false);
+    }
+  }, []);
+
+  const handleModeChange = useCallback(async (val: number) => {
+    setApplying(true);
+    try {
+      const res = await setRumbleMode(val);
+      setMode(res.mode);
+      if (_cache) _cache.mode = res.mode;
+      void testVibration(350);
     } finally {
       setApplying(false);
     }
@@ -154,7 +192,8 @@ const LGoVibeControl = () => {
     try {
       const res = await resetToDefault();
       setLevel(res.level);
-      if (_cache) _cache.level = res.level;
+      setMode(res.mode);
+      if (_cache) { _cache.level = res.level; _cache.mode = res.mode; }
     } finally {
       setApplying(false);
     }
@@ -185,24 +224,28 @@ const LGoVibeControl = () => {
         <PanelSectionRow>
           <div style={styles.statusRow}>
             <div style={styles.dot(driverFound)} />
-            <span style={styles.statusText(driverFound)}>
-              {driverFound
-                ? driverPaths[0] ?? "hid-lenovo-go found"
-                : "hid-lenovo-go driver not found"}
-            </span>
+            <div>
+              <span style={styles.statusText(driverFound)}>
+                {driverFound
+                  ? driverPaths[0] ?? "hid-lenovo-go found"
+                  : "hid-lenovo-go driver not found"}
+              </span>
+              {driverFound && driverMethod && (
+                <div style={styles.methodText}>via: {driverMethod}</div>
+              )}
+            </div>
           </div>
         </PanelSectionRow>
         {!driverFound && (
           <PanelSectionRow>
             <div style={styles.warningBox}>
-              The hid-lenovo-go sysfs endpoint was not detected. Requires Linux
-              7.1+ with the hid-lenovo-go module loaded on Legion Go 2 hardware.
+              The hid-lenovo-go sysfs endpoint was not detected. Requires SteamOS 3.8+ / Kernel 6.18+ with the hid-lenovo-go module loaded on Legion Go 2 hardware.
             </div>
           </PanelSectionRow>
         )}
       </PanelSection>
 
-      <PanelSection title="Vibration Intensity">
+      <PanelSection title="Vibration">
         <PanelSectionRow>
           <SliderField
             label="Intensity"
@@ -226,6 +269,33 @@ const LGoVibeControl = () => {
             onChange={(val: number) => {
               setLevel(val);
               void handleLevelChange(val);
+            }}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <SliderField
+            label="Mode"
+            description={
+              <span>
+                Mode: <span style={styles.valueTag}>{MODE_LABELS[mode]}</span>
+              </span>
+            }
+            value={mode}
+            min={0}
+            max={4}
+            step={1}
+            notchCount={5}
+            notchLabels={[
+              { notchIndex: 0, label: "FPS" },
+              { notchIndex: 1, label: "Race" },
+              { notchIndex: 2, label: "Std" },
+              { notchIndex: 3, label: "SPG" },
+              { notchIndex: 4, label: "RPG" },
+            ]}
+            disabled={applying}
+            onChange={(val: number) => {
+              setMode(val);
+              void handleModeChange(val);
             }}
           />
         </PanelSectionRow>
@@ -254,6 +324,7 @@ const LGoVibeControl = () => {
         <PanelSectionRow>
           <ButtonItem
             layout="below"
+            description="Tests current intensity & mode. Always fires on both handles — per-handle toggles don't apply to hardware FF."
             onClick={handleTest}
             disabled={applying || testing}
           >
@@ -266,7 +337,7 @@ const LGoVibeControl = () => {
             onClick={handleReset}
             disabled={applying || testing}
           >
-            Reset to Medium (default)
+            Reset to defaults
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
@@ -274,9 +345,7 @@ const LGoVibeControl = () => {
       <PanelSection title="Notes">
         <PanelSectionRow>
           <div style={styles.warningBox}>
-            Intensity maps to driver levels: Off / Low / Medium / High.
-            Per-handle toggles write to left_handle/rumble_notification and
-            right_handle/rumble_notification. Settings persist across reboots.
+            Intensity levels: Off → Low → Medium → High. Mode selects vibration pattern: FPS, Racing, Standard, SPG, RPG — applied globally to both handles. Settings persist across reboots.
           </div>
         </PanelSectionRow>
       </PanelSection>
@@ -290,8 +359,8 @@ const LGoVibeControl = () => {
 
 export default definePlugin(() => {
   return {
-    name: "LeGo2 Vibe Control",
-    titleView: <span>LeGo2 Vibe Control</span>,
+    name: "LeGo Vibe Control",
+    titleView: <span>LeGo Vibe Control</span>,
     content: <LGoVibeControl />,
     icon: (
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style={{ width: "1em", height: "1em" }}>

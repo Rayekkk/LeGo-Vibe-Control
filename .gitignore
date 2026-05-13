@@ -1,33 +1,10 @@
-# Built frontend bundle — produced by `cd src && pnpm run build`
-dist/index.js
-
-# Node / pnpm
-src/node_modules
+# Node
 src/node_modules/
-src/.pnpm-debug.log*
-pnpm-debug.log*
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 
-# Decky settings (user-local, not for source control)
-settings.json
-
-# Release artifacts (produced by CI / release script)
-*.zip
-
-# Editor
-.vscode/
-.idea/
-*.swp
-*~
-
-# Nested copy from previous zip extraction
-legion-go2-vibe-control/
-
-# Misc
-Text File.txt
-output.pdf
-CLAUDE.md
+# Build artifact
+LeGo-Vibe-Control.zip
