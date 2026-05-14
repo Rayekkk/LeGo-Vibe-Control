@@ -139,4 +139,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-*Created with the help of [Claude](https://claude.ai) 🤖*
+*Vibe coded with the help of [Claude](https://claude.ai) 🤖*
