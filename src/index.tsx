@@ -153,7 +153,7 @@ const LGoVibeControl = () => {
         setDriverPaths(d.paths);
         setDriverMethod(d.method ?? "");
       } catch (e) {
-        console.error("[lgo2-vibe] init error", e);
+        console.error("[lego-vibe] init error", e);
       } finally {
         setLoading(false);
       }

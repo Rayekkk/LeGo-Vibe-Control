@@ -22,12 +22,12 @@ try:
     _udev_ctx = _pyudev.Context()
     _PYUDEV = True
 except ImportError as _e:
-    decky.logger.warning(f"[lgo2-vibe] pyudev import failed: {_e}")
+    decky.logger.warning(f"[lego-vibe] pyudev import failed: {_e}")
     _pyudev = None
     _udev_ctx = None
     _PYUDEV = False
 except Exception as _e:
-    decky.logger.warning(f"[lgo2-vibe] pyudev init failed (libudev?): {_e}")
+    decky.logger.warning(f"[lego-vibe] pyudev init failed (libudev?): {_e}")
     _pyudev = None
     _udev_ctx = None
     _PYUDEV = False
@@ -88,12 +88,12 @@ def _discover() -> tuple[str | None, str | None]:
             found_any = True
             candidate = os.path.join(dev.sys_path, _SIGNATURE_ATTR)
             if os.path.exists(candidate):
-                decky.logger.info(f"[lgo2-vibe] found via pyudev: {dev.sys_path}")
+                decky.logger.info(f"[lego-vibe] found via pyudev: {dev.sys_path}")
                 return dev.sys_path, "pyudev"
         if not found_any:
-            decky.logger.warning("[lgo2-vibe] pyudev returned no HID devices at all")
+            decky.logger.warning("[lego-vibe] pyudev returned no HID devices at all")
         else:
-            decky.logger.warning("[lgo2-vibe] pyudev: no HID device has rumble_intensity")
+            decky.logger.warning("[lego-vibe] pyudev: no HID device has rumble_intensity")
 
     # Glob fallback — driver-name-agnostic, searches all HID drivers.
     # Path structure: /sys/bus/hid/drivers/<driver>/<device_id>/rumble_intensity
@@ -106,10 +106,10 @@ def _discover() -> tuple[str | None, str | None]:
     for pattern, method in patterns:
         for match in _glob.glob(pattern):
             path = os.path.dirname(match)
-            decky.logger.info(f"[lgo2-vibe] found via {method} ({pattern}): {path}")
+            decky.logger.info(f"[lego-vibe] found via {method} ({pattern}): {path}")
             return path, method
 
-    decky.logger.warning("[lgo2-vibe] device not found (pyudev and glob both failed)")
+    decky.logger.warning("[lego-vibe] device not found (pyudev and glob both failed)")
     return None, None
 
 
@@ -137,10 +137,10 @@ def _write_attr(sys_path: str, rel_path: str, value: str) -> bool:
     try:
         with open(path, 'w') as f:
             f.write(value + '\n')
-        decky.logger.info(f"[lgo2-vibe] {rel_path} = '{value}'")
+        decky.logger.info(f"[lego-vibe] {rel_path} = '{value}'")
         return True
     except OSError as exc:
-        decky.logger.error(f"[lgo2-vibe] write {path}: {exc}")
+        decky.logger.error(f"[lego-vibe] write {path}: {exc}")
         return False
 
 
@@ -193,7 +193,7 @@ def _find_ff_device() -> str | None:
                 bits = bytearray(32)
                 fcntl.ioctl(fh.fileno(), _EVIOCGBIT_FF, bits)
                 if bits[_FF_RUMBLE // 8] & (1 << (_FF_RUMBLE % 8)):
-                    decky.logger.info(f"[lgo2-vibe] FF device: {node}")
+                    decky.logger.info(f"[lego-vibe] FF device: {node}")
                     return node
         except Exception:
             pass
@@ -206,7 +206,7 @@ def _find_ff_device() -> str | None:
 
 async def _monitor_hotplug() -> None:
     if not _PYUDEV:
-        decky.logger.info("[lgo2-vibe] pyudev unavailable, hotplug monitor disabled")
+        decky.logger.info("[lego-vibe] pyudev unavailable, hotplug monitor disabled")
         return
     global _device_path, _discovery_method
     monitor = _pyudev.Monitor.from_netlink(_udev_ctx)
@@ -222,7 +222,7 @@ async def _monitor_hotplug() -> None:
                 if os.path.exists(os.path.join(event.sys_path, _SIGNATURE_ATTR)):
                     _device_path = event.sys_path
                     _discovery_method = "udev-hotplug"
-                    decky.logger.info(f"[lgo2-vibe] device connected: {event.sys_path}")
+                    decky.logger.info(f"[lego-vibe] device connected: {event.sys_path}")
                     settings.read()
                     _write_rumble_intensity(settings.getSetting(SETTINGS_KEY_LEVEL, DEFAULT_LEVEL))
                     _write_rumble_mode(settings.getSetting(SETTINGS_KEY_MODE,       DEFAULT_MODE))
@@ -234,7 +234,7 @@ async def _monitor_hotplug() -> None:
                 if _device_path is not None and event.sys_path == _device_path:
                     _device_path = None
                     _discovery_method = None
-                    decky.logger.info("[lgo2-vibe] device disconnected")
+                    decky.logger.info("[lego-vibe] device disconnected")
     except asyncio.CancelledError:
         pass
 
@@ -247,14 +247,14 @@ class Plugin:
 
     async def _main(self):
         global _monitor_task
-        decky.logger.info(f"[lgo2-vibe] startup  pyudev={_PYUDEV}")
+        decky.logger.info(f"[lego-vibe] startup  pyudev={_PYUDEV}")
         settings.read()
         level    = settings.getSetting(SETTINGS_KEY_LEVEL,        DEFAULT_LEVEL)
         mode     = settings.getSetting(SETTINGS_KEY_MODE,         DEFAULT_MODE)
         tp_int   = settings.getSetting(SETTINGS_KEY_TP_INTENSITY, DEFAULT_TOUCHPAD_INTENSITY)
         tp_en    = settings.getSetting(SETTINGS_KEY_TP_ENABLED,   DEFAULT_TOUCHPAD_ENABLED)
         decky.logger.info(
-            f"[lgo2-vibe] level={level} ({_int_to_level(level)}) "
+            f"[lego-vibe] level={level} ({_int_to_level(level)}) "
             f"tp_intensity={tp_int} tp_enabled={tp_en}"
         )
         _write_rumble_intensity(level)
@@ -276,7 +276,7 @@ class Plugin:
             except asyncio.CancelledError:
                 pass
             _monitor_task = None
-        decky.logger.info("[lgo2-vibe] unloaded")
+        decky.logger.info("[lego-vibe] unloaded")
 
     # ---- RPC surface ------------------------------------------------ #
 
@@ -332,7 +332,7 @@ class Plugin:
 
     async def get_driver_status(self) -> dict:
         p = _get_device_path()
-        decky.logger.info(f"[lgo2-vibe] get_driver_status → path={p!r}  pyudev={_PYUDEV}  method={_discovery_method!r}")
+        decky.logger.info(f"[lego-vibe] get_driver_status → path={p!r}  pyudev={_PYUDEV}  method={_discovery_method!r}")
         return {"found": p is not None, "paths": [p] if p else [], "method": _discovery_method or ""}
 
     async def test_vibration(self, duration_ms: int = 500) -> dict:
@@ -347,7 +347,7 @@ class Plugin:
 
         ff_path = _find_ff_device()
         if ff_path is None:
-            decky.logger.warning("[lgo2-vibe] test_vibration: no FF device found")
+            decky.logger.warning("[lego-vibe] test_vibration: no FF device found")
             return {"success": False, "error": "No rumble-capable input device found"}
 
         try:
@@ -374,12 +374,12 @@ class Plugin:
                 fcntl.ioctl(fd, _EVIOCRMFF, struct.pack('<i', effect_id))
 
                 decky.logger.info(
-                    f"[lgo2-vibe] test_vibration: level={level} ({intensity_pct}%) "
+                    f"[lego-vibe] test_vibration: level={level} ({intensity_pct}%) "
                     f"mag={mag:#06x} duration={duration}ms via {ff_path}"
                 )
                 return {"success": True}
             finally:
                 os.close(fd)
         except Exception as exc:
-            decky.logger.error(f"[lgo2-vibe] test_vibration failed: {exc}")
+            decky.logger.error(f"[lego-vibe] test_vibration failed: {exc}")
             return {"success": False, "error": str(exc)}
