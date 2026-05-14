@@ -2,8 +2,6 @@
 
 A [Decky Loader](https://decky.xyz) plugin for the **Lenovo Legion Go 2** that lets you control vibration intensity and pattern on both grip handles.
 
-> **Fork notice** — this plugin is a fork of [ally-vibe-control](https://github.com/piyush-tyagi-13/ally-vibe-control) by [piyush-tyagi-13](https://github.com/piyush-tyagi-13), originally written for the ASUS ROG Ally X. Huge thanks for the clean architecture and the Decky integration — it made porting this to Legion hardware straightforward. Original plugin licensed under MIT.
-
 ---
 
 ## Features
@@ -124,7 +122,6 @@ sudo cat ~/homebrew/logs/"LeGo Vibe Control"/*.log | tail -30
 
 ## Credits
 
-- Original plugin: **[ally-vibe-control](https://github.com/piyush-tyagi-13/ally-vibe-control)** by [piyush-tyagi-13](https://github.com/piyush-tyagi-13) — MIT License
 - Kernel driver: `hid-lenovo-go` by Derek J. Clark, merged into Kernel 6.18 (SteamOS 3.8+)
 
 ---
