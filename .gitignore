@@ -1,13 +1,18 @@
 # Node
-src/node_modules/
+node_modules/
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 
+# Build output
+dist/
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
+
 # Claude Code
 CLAUDE.md
-
-# Build artifact
-LeGo-Vibe-Control.zip

@@ -11,7 +11,7 @@ declare const SP_REACT: any;
 const { useState, useEffect, useCallback } = SP_REACT;
 
 // Module-level cache: survives component remounts within the same plugin session.
-let _cache: { level: number; leftEnabled: boolean; rightEnabled: boolean; mode: number } | null = null;
+let _cache: { level: number; mode: number; touchpadIntensity: number; touchpadEnabled: boolean } | null = null;
 
 const LEVEL_LABELS = ["Off", "Low", "Medium", "High"];
 const MODE_LABELS  = ["FPS", "Racing", "Standard", "SPG", "RPG"];
@@ -20,7 +20,7 @@ const MODE_LABELS  = ["FPS", "Racing", "Standard", "SPG", "RPG"];
 // Backend callables
 // ------------------------------------------------------------------ //
 
-const getSettings = callable<[], { level: number; left_enabled: boolean; right_enabled: boolean; mode: number }>(
+const getSettings = callable<[], { level: number; mode: number; touchpad_intensity: number; touchpad_enabled: boolean }>(
   "get_settings"
 );
 
@@ -32,11 +32,7 @@ const setRumbleMode = callable<[mode_idx: number], { success: boolean; mode: num
   "set_rumble_mode"
 );
 
-const setHandleEnabled = callable<[handle: string, enabled: boolean], { success: boolean; handle: string; enabled: boolean }>(
-  "set_handle_enabled"
-);
-
-const resetToDefault = callable<[], { success: boolean; level: number; mode: number }>(
+const resetToDefault = callable<[], { success: boolean; level: number; mode: number; touchpad_intensity: number; touchpad_enabled: boolean }>(
   "reset_to_default"
 );
 
@@ -46,6 +42,14 @@ const getDriverStatus = callable<[], { found: boolean; paths: string[]; method: 
 
 const testVibration = callable<[duration_ms: number], { success: boolean; error?: string }>(
   "test_vibration"
+);
+
+const setTouchpadIntensity = callable<[level: number], { success: boolean; level: number }>(
+  "set_touchpad_intensity"
+);
+
+const setTouchpadEnabled = callable<[enabled: boolean], { success: boolean; enabled: boolean }>(
+  "set_touchpad_enabled"
 );
 
 // ------------------------------------------------------------------ //
@@ -111,8 +115,8 @@ const styles = {
 const LGoVibeControl = () => {
   const [level,        setLevel]        = useState<number>(_cache?.level        ?? 2);
   const [mode,         setMode]         = useState<number>(_cache?.mode         ?? 0);
-  const [leftEnabled,  setLeftEnabled]  = useState<boolean>(_cache?.leftEnabled  ?? true);
-  const [rightEnabled, setRightEnabled] = useState<boolean>(_cache?.rightEnabled ?? true);
+  const [touchpadIntensity, setTpIntensity] = useState<number>(_cache?.touchpadIntensity  ?? 2);
+  const [touchpadEnabled,   setTpEnabled]   = useState<boolean>(_cache?.touchpadEnabled   ?? true);
   const [driverFound,  setDriverFound]  = useState<boolean>(false);
   const [driverPaths,  setDriverPaths]  = useState<string[]>([]);
   const [driverMethod, setDriverMethod] = useState<string>("");
@@ -135,11 +139,16 @@ const LGoVibeControl = () => {
           Promise.all([getSettings(), getDriverStatus()]),
           5000
         );
-        _cache = { level: s.level, leftEnabled: s.left_enabled, rightEnabled: s.right_enabled, mode: s.mode ?? 0 };
+        _cache = {
+          level: s.level,
+          mode: s.mode ?? 0,
+          touchpadIntensity: s.touchpad_intensity ?? 2,
+          touchpadEnabled: s.touchpad_enabled ?? true,
+        };
         setLevel(s.level);
         setMode(s.mode ?? 0);
-        setLeftEnabled(s.left_enabled);
-        setRightEnabled(s.right_enabled);
+        setTpIntensity(s.touchpad_intensity ?? 2);
+        setTpEnabled(s.touchpad_enabled ?? true);
         setDriverFound(d.found);
         setDriverPaths(d.paths);
         setDriverMethod(d.method ?? "");
@@ -175,16 +184,21 @@ const LGoVibeControl = () => {
     }
   }, []);
 
-  const handleLeftToggle = useCallback(async (val: boolean) => {
-    setLeftEnabled(val);
-    if (_cache) _cache.leftEnabled = val;
-    await setHandleEnabled("left", val);
+  const handleTouchpadLevelChange = useCallback(async (val: number) => {
+    setApplying(true);
+    try {
+      const res = await setTouchpadIntensity(val);
+      setTpIntensity(res.level);
+      if (_cache) _cache.touchpadIntensity = res.level;
+    } finally {
+      setApplying(false);
+    }
   }, []);
 
-  const handleRightToggle = useCallback(async (val: boolean) => {
-    setRightEnabled(val);
-    if (_cache) _cache.rightEnabled = val;
-    await setHandleEnabled("right", val);
+  const handleTouchpadToggle = useCallback(async (val: boolean) => {
+    setTpEnabled(val);
+    if (_cache) _cache.touchpadEnabled = val;
+    await setTouchpadEnabled(val);
   }, []);
 
   const handleReset = useCallback(async () => {
@@ -193,7 +207,14 @@ const LGoVibeControl = () => {
       const res = await resetToDefault();
       setLevel(res.level);
       setMode(res.mode);
-      if (_cache) { _cache.level = res.level; _cache.mode = res.mode; }
+      setTpIntensity(res.touchpad_intensity);
+      setTpEnabled(res.touchpad_enabled);
+      if (_cache) {
+        _cache.level = res.level;
+        _cache.mode = res.mode;
+        _cache.touchpadIntensity = res.touchpad_intensity;
+        _cache.touchpadEnabled = res.touchpad_enabled;
+      }
     } finally {
       setApplying(false);
     }
@@ -301,21 +322,39 @@ const LGoVibeControl = () => {
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Controllers">
+      <PanelSection title="Touchpad">
         <PanelSectionRow>
           <ToggleField
-            label="Left controller rumble"
-            description="Enable vibration on left handle"
-            checked={leftEnabled}
-            onChange={handleLeftToggle}
+            label="Touchpad vibration"
+            description="Enable vibration on touchpad"
+            checked={touchpadEnabled}
+            onChange={handleTouchpadToggle}
           />
         </PanelSectionRow>
         <PanelSectionRow>
-          <ToggleField
-            label="Right controller rumble"
-            description="Enable vibration on right handle"
-            checked={rightEnabled}
-            onChange={handleRightToggle}
+          <SliderField
+            label="Touchpad intensity"
+            description={
+              <span>
+                Level: <span style={styles.valueTag}>{LEVEL_LABELS[touchpadIntensity]}</span>
+              </span>
+            }
+            value={touchpadIntensity}
+            min={0}
+            max={3}
+            step={1}
+            notchCount={4}
+            notchLabels={[
+              { notchIndex: 0, label: "Off" },
+              { notchIndex: 1, label: "Low" },
+              { notchIndex: 2, label: "Med" },
+              { notchIndex: 3, label: "High" },
+            ]}
+            disabled={applying || !touchpadEnabled}
+            onChange={(val: number) => {
+              setTpIntensity(val);
+              void handleTouchpadLevelChange(val);
+            }}
           />
         </PanelSectionRow>
       </PanelSection>

@@ -43,10 +43,13 @@ DEFAULT_LEVEL  = 2  # medium
 RUMBLE_MODES   = ["fps", "racing", "standard", "spg", "rpg"]
 DEFAULT_MODE   = 0  # fps
 
-SETTINGS_KEY_LEVEL    = "intensity_level"
-SETTINGS_KEY_LEFT_EN  = "left_enabled"
-SETTINGS_KEY_RIGHT_EN = "right_enabled"
-SETTINGS_KEY_MODE     = "rumble_mode"
+SETTINGS_KEY_LEVEL         = "intensity_level"
+SETTINGS_KEY_MODE          = "rumble_mode"
+SETTINGS_KEY_TP_INTENSITY  = "touchpad_intensity"
+SETTINGS_KEY_TP_ENABLED    = "touchpad_enabled"
+
+DEFAULT_TOUCHPAD_INTENSITY = 2  # medium
+DEFAULT_TOUCHPAD_ENABLED   = True
 
 settings = SettingsManager(
     name="settings",
@@ -158,11 +161,18 @@ def _write_rumble_mode(mode_idx: int) -> bool:
     return ok_l and ok_r
 
 
-def _write_handle_notification(handle: str, enabled: bool) -> bool:
+def _write_touchpad_intensity(level_int: int) -> bool:
     p = _get_device_path()
     if p is None:
         return False
-    return _write_attr(p, f"{handle}_handle/rumble_notification", "true" if enabled else "false")
+    return _write_attr(p, 'touchpad/vibration_intensity', _int_to_level(level_int))
+
+
+def _write_touchpad_enabled(enabled: bool) -> bool:
+    p = _get_device_path()
+    if p is None:
+        return False
+    return _write_attr(p, 'touchpad/vibration_enabled', "true" if enabled else "false")
 
 
 def _find_ff_device() -> str | None:
@@ -214,10 +224,12 @@ async def _monitor_hotplug() -> None:
                     _discovery_method = "udev-hotplug"
                     decky.logger.info(f"[lgo2-vibe] device connected: {event.sys_path}")
                     settings.read()
-                    _write_rumble_intensity(settings.getSetting(SETTINGS_KEY_LEVEL,    DEFAULT_LEVEL))
-                    _write_rumble_mode(settings.getSetting(SETTINGS_KEY_MODE,          DEFAULT_MODE))
-                    _write_handle_notification("left",  settings.getSetting(SETTINGS_KEY_LEFT_EN,  True))
-                    _write_handle_notification("right", settings.getSetting(SETTINGS_KEY_RIGHT_EN, True))
+                    _write_rumble_intensity(settings.getSetting(SETTINGS_KEY_LEVEL, DEFAULT_LEVEL))
+                    _write_rumble_mode(settings.getSetting(SETTINGS_KEY_MODE,       DEFAULT_MODE))
+                    _write_attr(event.sys_path, 'left_handle/rumble_notification',  'true')
+                    _write_attr(event.sys_path, 'right_handle/rumble_notification', 'true')
+                    _write_touchpad_intensity(settings.getSetting(SETTINGS_KEY_TP_INTENSITY, DEFAULT_TOUCHPAD_INTENSITY))
+                    _write_touchpad_enabled(settings.getSetting(SETTINGS_KEY_TP_ENABLED,     DEFAULT_TOUCHPAD_ENABLED))
             elif event.action == 'remove':
                 if _device_path is not None and event.sys_path == _device_path:
                     _device_path = None
@@ -237,18 +249,22 @@ class Plugin:
         global _monitor_task
         decky.logger.info(f"[lgo2-vibe] startup  pyudev={_PYUDEV}")
         settings.read()
-        level    = settings.getSetting(SETTINGS_KEY_LEVEL,    DEFAULT_LEVEL)
-        left_en  = settings.getSetting(SETTINGS_KEY_LEFT_EN,  True)
-        right_en = settings.getSetting(SETTINGS_KEY_RIGHT_EN, True)
+        level    = settings.getSetting(SETTINGS_KEY_LEVEL,        DEFAULT_LEVEL)
+        mode     = settings.getSetting(SETTINGS_KEY_MODE,         DEFAULT_MODE)
+        tp_int   = settings.getSetting(SETTINGS_KEY_TP_INTENSITY, DEFAULT_TOUCHPAD_INTENSITY)
+        tp_en    = settings.getSetting(SETTINGS_KEY_TP_ENABLED,   DEFAULT_TOUCHPAD_ENABLED)
         decky.logger.info(
             f"[lgo2-vibe] level={level} ({_int_to_level(level)}) "
-            f"left={left_en} right={right_en}"
+            f"tp_intensity={tp_int} tp_enabled={tp_en}"
         )
-        mode     = settings.getSetting(SETTINGS_KEY_MODE,     DEFAULT_MODE)
         _write_rumble_intensity(level)
         _write_rumble_mode(mode)
-        _write_handle_notification("left",  left_en)
-        _write_handle_notification("right", right_en)
+        p = _get_device_path()
+        if p:
+            _write_attr(p, 'left_handle/rumble_notification',  'true')
+            _write_attr(p, 'right_handle/rumble_notification', 'true')
+        _write_touchpad_intensity(tp_int)
+        _write_touchpad_enabled(tp_en)
         _monitor_task = asyncio.ensure_future(_monitor_hotplug())
 
     async def _unload(self):
@@ -267,10 +283,10 @@ class Plugin:
     async def get_settings(self) -> dict:
         settings.read()
         return {
-            "level":         settings.getSetting(SETTINGS_KEY_LEVEL,    DEFAULT_LEVEL),
-            "left_enabled":  settings.getSetting(SETTINGS_KEY_LEFT_EN,  True),
-            "right_enabled": settings.getSetting(SETTINGS_KEY_RIGHT_EN, True),
-            "mode":          settings.getSetting(SETTINGS_KEY_MODE,     DEFAULT_MODE),
+            "level":              settings.getSetting(SETTINGS_KEY_LEVEL,        DEFAULT_LEVEL),
+            "mode":               settings.getSetting(SETTINGS_KEY_MODE,         DEFAULT_MODE),
+            "touchpad_intensity": settings.getSetting(SETTINGS_KEY_TP_INTENSITY, DEFAULT_TOUCHPAD_INTENSITY),
+            "touchpad_enabled":   settings.getSetting(SETTINGS_KEY_TP_ENABLED,   DEFAULT_TOUCHPAD_ENABLED),
         }
 
     async def set_intensity(self, level: int) -> dict:
@@ -280,13 +296,6 @@ class Plugin:
         ok = _write_rumble_intensity(level)
         return {"success": ok, "level": level}
 
-    async def set_handle_enabled(self, handle: str, enabled: bool) -> dict:
-        key = SETTINGS_KEY_LEFT_EN if handle == "left" else SETTINGS_KEY_RIGHT_EN
-        settings.setSetting(key, bool(enabled))
-        settings.commit()
-        ok = _write_handle_notification(handle, bool(enabled))
-        return {"success": ok, "handle": handle, "enabled": bool(enabled)}
-
     async def set_rumble_mode(self, mode_idx: int) -> dict:
         mode_idx = max(0, min(len(RUMBLE_MODES) - 1, int(mode_idx)))
         settings.setSetting(SETTINGS_KEY_MODE, mode_idx)
@@ -294,13 +303,31 @@ class Plugin:
         ok = _write_rumble_mode(mode_idx)
         return {"success": ok, "mode": mode_idx}
 
+    async def set_touchpad_intensity(self, level: int) -> dict:
+        level = max(0, min(3, int(level)))
+        settings.setSetting(SETTINGS_KEY_TP_INTENSITY, level)
+        settings.commit()
+        ok = _write_touchpad_intensity(level)
+        return {"success": ok, "level": level}
+
+    async def set_touchpad_enabled(self, enabled: bool) -> dict:
+        settings.setSetting(SETTINGS_KEY_TP_ENABLED, bool(enabled))
+        settings.commit()
+        ok = _write_touchpad_enabled(bool(enabled))
+        return {"success": ok, "enabled": bool(enabled)}
+
     async def reset_to_default(self) -> dict:
         level_res = await self.set_intensity(DEFAULT_LEVEL)
         mode_res  = await self.set_rumble_mode(DEFAULT_MODE)
+        tp_int_res = await self.set_touchpad_intensity(DEFAULT_TOUCHPAD_INTENSITY)
+        tp_en_res  = await self.set_touchpad_enabled(DEFAULT_TOUCHPAD_ENABLED)
         return {
-            "success": level_res["success"] and mode_res["success"],
-            "level":   DEFAULT_LEVEL,
-            "mode":    DEFAULT_MODE,
+            "success": level_res["success"] and mode_res["success"]
+                       and tp_int_res["success"] and tp_en_res["success"],
+            "level":            DEFAULT_LEVEL,
+            "mode":             DEFAULT_MODE,
+            "touchpad_intensity": DEFAULT_TOUCHPAD_INTENSITY,
+            "touchpad_enabled":   DEFAULT_TOUCHPAD_ENABLED,
         }
 
     async def get_driver_status(self) -> dict:
@@ -310,23 +337,13 @@ class Plugin:
 
     async def test_vibration(self, duration_ms: int = 500) -> dict:
         settings.read()
-        level    = settings.getSetting(SETTINGS_KEY_LEVEL,    DEFAULT_LEVEL)
-        left_en  = settings.getSetting(SETTINGS_KEY_LEFT_EN,  True)
-        right_en = settings.getSetting(SETTINGS_KEY_RIGHT_EN, True)
-
-        if not left_en and not right_en:
-            decky.logger.info("[lgo2-vibe] test_vibration: both handles disabled, skipping")
-            return {"success": True}
-
-        # Re-apply handle state so the FF event sees the correct enable flags
-        p = _get_device_path()
-        if p:
-            _write_handle_notification("left",  left_en)
-            _write_handle_notification("right", right_en)
+        level = settings.getSetting(SETTINGS_KEY_LEVEL, DEFAULT_LEVEL)
 
         intensity_pct = [0, 33, 66, 100][max(0, min(3, level))]
         duration = max(100, min(2000, int(duration_ms)))
         mag = int(0xFFFF * intensity_pct / 100)
+        strong_mag = mag
+        weak_mag   = mag
 
         ff_path = _find_ff_device()
         if ff_path is None:
@@ -341,7 +358,7 @@ class Plugin:
                     _FF_RUMBLE, -1, 0,
                     0, 0,
                     duration, 0,
-                    mag, mag,
+                    strong_mag, weak_mag,
                 ))
                 fcntl.ioctl(fd, _EVIOCSFF, effect_buf)
                 effect_id = struct.unpack_from('<h', effect_buf, 2)[0]
@@ -358,7 +375,7 @@ class Plugin:
 
                 decky.logger.info(
                     f"[lgo2-vibe] test_vibration: level={level} ({intensity_pct}%) "
-                    f"duration={duration}ms via {ff_path}"
+                    f"mag={mag:#06x} duration={duration}ms via {ff_path}"
                 )
                 return {"success": True}
             finally:
