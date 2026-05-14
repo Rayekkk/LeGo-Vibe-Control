@@ -27,8 +27,7 @@ Created for the **Legion Go 2** and tested on the **Legion Go 2 Z2E**. May also 
 | Kernel driver | `hid-lenovo-go` (mainline since Kernel 6.18, March 2026) |
 | Plugin loader | [Decky Loader](https://decky.xyz) |
 
-> **Legion Go S is not supported.** Its `hid-lenovo-go-s` driver does not expose vibration control via sysfs.
-
+> **Legion Go S is not supported.** Its `hid-lenovo-go-s` driver does not expose vibration control via sysfs  (as of May 14, 2026, SteamOS 3.9).
 ---
 
 ## Installation
