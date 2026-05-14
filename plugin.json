@@ -1,6 +1,7 @@
 {
   "api_version": 1,
   "name": "LeGo Vibe Control",
+  "version": "1.2.0",
   "author": "Rayek",
   "flags": ["root"],
   "publish": {
