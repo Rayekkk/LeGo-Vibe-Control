@@ -337,7 +337,6 @@ class Plugin:
         return {"found": p is not None, "paths": [p] if p else [], "method": _discovery_method or ""}
 
     # Per-game profiles
-
     async def get_game_profiles(self) -> dict:
         settings.read()
         return settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {})
@@ -346,32 +345,6 @@ class Plugin:
         settings.setSetting(SETTINGS_KEY_GAME_PROFILES, profiles)
         settings.commit()
         decky.logger.info(f"[lego-vibe] saved {len(profiles)} game profile(s)")
-        return {"success": True}
-
-    async def apply_hw_only(self, settings_dict: dict) -> dict:
-        """Write settings to hardware (sysfs) WITHOUT persisting to settings.json.
-        Used by per-game profile switching to avoid overwriting global settings."""
-        level = max(0, min(3, int(settings_dict.get("level", 2))))
-        mode_idx = max(0, min(len(RUMBLE_MODES) - 1, int(settings_dict.get("mode", 0))))
-        tp_int = max(0, min(3, int(settings_dict.get("touchpadIntensity", 2))))
-        tp_en = bool(settings_dict.get("touchpadEnabled", True))
-        decky.logger.info(
-            f"[lego-vibe] apply_hw_only: level={level} mode={mode_idx} "
-            f"tp_int={tp_int} tp_en={tp_en} raw_dict={settings_dict}"
-        )
-        ok1 = _write_rumble_intensity(level)
-        ok2 = _write_rumble_mode(mode_idx)
-        ok3 = _write_touchpad_intensity(tp_int)
-        ok4 = _write_touchpad_enabled(tp_en)
-        return {"success": ok1 and ok2 and ok3 and ok4}
-
-    async def save_global_settings(self, settings_dict: dict) -> dict:
-        """Persist global settings to settings.json WITHOUT writing to sysfs."""
-        settings.setSetting(SETTINGS_KEY_LEVEL, max(0, min(3, int(settings_dict.get("level", 2)))))
-        settings.setSetting(SETTINGS_KEY_MODE, max(0, min(len(RUMBLE_MODES) - 1, int(settings_dict.get("mode", 0)))))
-        settings.setSetting(SETTINGS_KEY_TP_INTENSITY, max(0, min(3, int(settings_dict.get("touchpadIntensity", 2)))))
-        settings.setSetting(SETTINGS_KEY_TP_ENABLED, bool(settings_dict.get("touchpadEnabled", True)))
-        settings.commit()
         return {"success": True}
 
     async def test_vibration(self, duration_ms: int = 500) -> dict:
