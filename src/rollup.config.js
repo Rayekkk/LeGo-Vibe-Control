@@ -39,6 +39,7 @@ export default _DFL;
 export const ButtonItem = _DFL.ButtonItem;
 export const PanelSection = _DFL.PanelSection;
 export const PanelSectionRow = _DFL.PanelSectionRow;
+export const Router = _DFL.Router;
 export const SliderField = _DFL.SliderField;
 export const ToggleField = _DFL.ToggleField;
 `;
