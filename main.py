@@ -47,6 +47,7 @@ SETTINGS_KEY_LEVEL         = "intensity_level"
 SETTINGS_KEY_MODE          = "rumble_mode"
 SETTINGS_KEY_TP_INTENSITY  = "touchpad_intensity"
 SETTINGS_KEY_TP_ENABLED    = "touchpad_enabled"
+SETTINGS_KEY_GAME_PROFILES = "game_profiles"
 
 DEFAULT_TOUCHPAD_INTENSITY = 2  # medium
 DEFAULT_TOUCHPAD_ENABLED   = True
@@ -334,6 +335,17 @@ class Plugin:
         p = _get_device_path()
         decky.logger.info(f"[lego-vibe] get_driver_status → path={p!r}  pyudev={_PYUDEV}  method={_discovery_method!r}")
         return {"found": p is not None, "paths": [p] if p else [], "method": _discovery_method or ""}
+
+    # Per-game profiles
+    async def get_game_profiles(self) -> dict:
+        settings.read()
+        return settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {})
+
+    async def set_game_profiles(self, profiles: dict) -> dict:
+        settings.setSetting(SETTINGS_KEY_GAME_PROFILES, profiles)
+        settings.commit()
+        decky.logger.info(f"[lego-vibe] saved {len(profiles)} game profile(s)")
+        return {"success": True}
 
     async def test_vibration(self, duration_ms: int = 500) -> dict:
         settings.read()
