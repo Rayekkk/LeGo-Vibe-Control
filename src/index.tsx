@@ -45,6 +45,8 @@ const setTouchpadEnabled = callable<[boolean], { success: boolean; enabled: bool
 const resetToDefault     = callable<[], { success: boolean; level: number; mode: number; touchpad_intensity: number; touchpad_enabled: boolean }>("reset_to_default");
 const getDriverStatus    = callable<[], { found: boolean; paths: string[]; method: string }>("get_driver_status");
 const testVibration      = callable<[number],  { success: boolean; error?: string }>("test_vibration");
+const checkForUpdates    = callable<[], { current_version?: string; latest_version?: string; update_available?: boolean; download_url?: string; asset_name?: string; error?: string }>("check_for_updates");
+const performUpdate      = callable<[string, string], { success: boolean; path?: string; error?: string }>("perform_update");
 
 const getGameProfiles = callable<[], GameProfiles>("get_game_profiles");
 const setGameProfiles = callable<[GameProfiles], { success: boolean }>("set_game_profiles");
@@ -263,6 +265,10 @@ const LGoVibeControl = () => {
   const [loading,           setLoading]      = useState(true);
   const [applying,          setApplying]     = useState(false);
   const [testing,           setTesting]      = useState(false);
+  const [updateInfo,        setUpdateInfo]   = useState<{ current_version?: string; latest_version?: string; update_available?: boolean; download_url?: string; asset_name?: string; error?: string } | null>(null);
+  const [checking,          setChecking]     = useState(false);
+  const [downloading,       setDownloading]  = useState(false);
+  const [downloadPath,      setDownloadPath] = useState<string | null>(null);
 
   const [perGameOn,    setPerGameOn]    = useState(false);
   const [overrideable, setOverrideable] = useState(false);
@@ -361,6 +367,30 @@ const LGoVibeControl = () => {
       _prevHWSettings = SettingsManager.current();
     } finally { setApplying(false); }
   }, []);
+
+  const handleCheckUpdate = useCallback(async () => {
+    setChecking(true);
+    setUpdateInfo(null);
+    setDownloadPath(null);
+    try {
+      const res = await checkForUpdates();
+      setUpdateInfo(res);
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  const handleDownloadUpdate = useCallback(async () => {
+    if (!updateInfo?.download_url || !updateInfo?.asset_name) return;
+    setDownloading(true);
+    try {
+      const res = await performUpdate(updateInfo.download_url, updateInfo.asset_name);
+      if (res.success && res.path) setDownloadPath(res.path);
+      else setUpdateInfo({ ...updateInfo, error: res.error });
+    } finally {
+      setDownloading(false);
+    }
+  }, [updateInfo]);
 
   const handleTest = useCallback(async () => {
     setTesting(true);
@@ -505,6 +535,50 @@ const LGoVibeControl = () => {
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={handleReset} disabled={applying || testing}>
             Reset to defaults
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Updates">
+        <PanelSectionRow>
+          <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>
+            Installed: <span style={styles.valueTag}>v{updateInfo?.current_version ?? "1.3.0"}</span>
+            {updateInfo?.latest_version && !updateInfo.error && (
+              <span> &nbsp; Latest: <span style={styles.valueTag}>v{updateInfo.latest_version}</span></span>
+            )}
+          </div>
+        </PanelSectionRow>
+        {updateInfo?.error && (
+          <PanelSectionRow>
+            <div style={{ ...styles.warningBox, color: "#f87171", borderColor: "rgba(248,113,113,0.4)", background: "rgba(248,113,113,0.1)" }}>
+              {updateInfo.error}
+            </div>
+          </PanelSectionRow>
+        )}
+        {updateInfo && !updateInfo.error && !updateInfo.update_available && !downloadPath && (
+          <PanelSectionRow>
+            <div style={{ fontSize: "12px", color: "#4ade80" }}>Up to date</div>
+          </PanelSectionRow>
+        )}
+        {updateInfo?.update_available && !downloadPath && (
+          <PanelSectionRow>
+            <ButtonItem layout="below" onClick={handleDownloadUpdate} disabled={downloading}>
+              {downloading ? "Downloading..." : `Download v${updateInfo.latest_version}`}
+            </ButtonItem>
+          </PanelSectionRow>
+        )}
+        {downloadPath && (
+          <PanelSectionRow>
+            <div style={styles.warningBox}>
+              Downloaded to <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{downloadPath}</span>
+              <br /><br />
+              To install: Decky → Developer → Uninstall LeGo Vibe Control → Install Plugin from ZIP → select the file.
+            </div>
+          </PanelSectionRow>
+        )}
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={handleCheckUpdate} disabled={checking || downloading}>
+            {checking ? "Checking..." : "Check for updates"}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

@@ -1,8 +1,8 @@
 # LeGo Vibe Control
 
-A [Decky Loader](https://decky.xyz) plugin for the **Lenovo Legion Go 2** that lets you control vibration intensity, pattern, and touchpad haptics.
+A [Decky Loader](https://decky.xyz) plugin for the **Lenovo Legion Go** and **Legion Go 2** that lets you control vibration intensity, pattern, and touchpad haptics.
 
-Created for the **Legion Go 2** and tested on the **Legion Go 2 Z2E**. May also work on the original Legion Go 1, but this has not been tested.
+Designed for the **Lenovo Legion Go** and **Legion Go 2**. Tested on the **Legion Go 2 Z2E**.
 
 ---
 
@@ -22,7 +22,7 @@ Created for the **Legion Go 2** and tested on the **Legion Go 2 Z2E**. May also 
 
 | Requirement | Details |
 |---|---|
-| Device | Lenovo Legion Go 2 |
+| Device | Lenovo Legion Go / Legion Go 2 |
 | OS | SteamOS 3.8+ / Kernel 6.18+ |
 | Kernel driver | `hid-lenovo-go` (mainline since Kernel 6.18, March 2026) |
 | Plugin loader | [Decky Loader](https://decky.xyz) |

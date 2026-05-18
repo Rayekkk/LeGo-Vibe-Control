@@ -5,6 +5,10 @@ import time
 import asyncio
 import struct
 import fcntl
+import ssl
+import urllib.request
+import json as _json
+import pwd
 from settings import SettingsManager
 
 # ------------------------------------------------------------------ #
@@ -35,6 +39,9 @@ except Exception as _e:
 # ------------------------------------------------------------------ #
 # Constants
 # ------------------------------------------------------------------ #
+
+PLUGIN_VERSION = "1.3.0"
+GITHUB_RELEASES_URL = "https://api.github.com/repos/Rayekkk/LeGo-Vibe-Control/releases/latest"
 
 LEVEL_NAMES    = ["off", "low", "medium", "high"]
 DEFAULT_LEVEL  = 2  # medium
@@ -227,8 +234,6 @@ async def _monitor_hotplug() -> None:
                     settings.read()
                     _write_rumble_intensity(settings.getSetting(SETTINGS_KEY_LEVEL, DEFAULT_LEVEL))
                     _write_rumble_mode(settings.getSetting(SETTINGS_KEY_MODE,       DEFAULT_MODE))
-                    _write_attr(event.sys_path, 'left_handle/rumble_notification',  'true')
-                    _write_attr(event.sys_path, 'right_handle/rumble_notification', 'true')
                     _write_touchpad_intensity(settings.getSetting(SETTINGS_KEY_TP_INTENSITY, DEFAULT_TOUCHPAD_INTENSITY))
                     _write_touchpad_enabled(settings.getSetting(SETTINGS_KEY_TP_ENABLED,     DEFAULT_TOUCHPAD_ENABLED))
             elif event.action == 'remove':
@@ -260,10 +265,6 @@ class Plugin:
         )
         _write_rumble_intensity(level)
         _write_rumble_mode(mode)
-        p = _get_device_path()
-        if p:
-            _write_attr(p, 'left_handle/rumble_notification',  'true')
-            _write_attr(p, 'right_handle/rumble_notification', 'true')
         _write_touchpad_intensity(tp_int)
         _write_touchpad_enabled(tp_en)
         _monitor_task = asyncio.ensure_future(_monitor_hotplug())
@@ -330,6 +331,62 @@ class Plugin:
             "touchpad_intensity": DEFAULT_TOUCHPAD_INTENSITY,
             "touchpad_enabled":   DEFAULT_TOUCHPAD_ENABLED,
         }
+
+    async def check_for_updates(self) -> dict:
+        def _do() -> dict:
+            try:
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                req = urllib.request.Request(
+                    GITHUB_RELEASES_URL,
+                    headers={"User-Agent": "lego-vibe-plugin"},
+                )
+                with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as resp:
+                    data = _json.loads(resp.read())
+                latest = data["tag_name"].lstrip("v")
+                asset = next((a for a in data.get("assets", []) if a["name"].endswith(".zip")), None)
+                latest_t  = tuple(int(x) for x in latest.split("."))
+                current_t = tuple(int(x) for x in PLUGIN_VERSION.split("."))
+                return {
+                    "current_version":  PLUGIN_VERSION,
+                    "latest_version":   latest,
+                    "update_available": latest_t > current_t,
+                    "download_url":     asset["browser_download_url"] if asset else None,
+                    "asset_name":       asset["name"] if asset else None,
+                }
+            except Exception as e:
+                decky.logger.error(f"[lego-vibe] check_for_updates: {e}")
+                return {"error": str(e)}
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _do)
+
+    async def perform_update(self, download_url: str, asset_name: str) -> dict:
+        def _do() -> dict:
+            try:
+                user = next(
+                    (p for p in sorted(pwd.getpwall(), key=lambda p: p.pw_uid)
+                     if p.pw_uid >= 1000 and os.path.isdir(p.pw_dir)),
+                    None,
+                )
+                downloads_dir = os.path.join(user.pw_dir, "Downloads") if user else "/home/deck/Downloads"
+                os.makedirs(downloads_dir, exist_ok=True)
+                dest = os.path.join(downloads_dir, asset_name)
+                if os.path.exists(dest):
+                    os.unlink(dest)
+                ssl_ctx = ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+                with urllib.request.urlopen(download_url, context=ssl_ctx, timeout=60) as resp, \
+                     open(dest, "wb") as f:
+                    f.write(resp.read())
+                decky.logger.info(f"[lego-vibe] update downloaded to {dest}")
+                return {"success": True, "path": dest}
+            except Exception as e:
+                decky.logger.error(f"[lego-vibe] perform_update: {e}")
+                return {"success": False, "error": str(e)}
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _do)
 
     async def get_driver_status(self) -> dict:
         p = _get_device_path()
