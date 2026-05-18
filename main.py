@@ -40,7 +40,6 @@ except Exception as _e:
 # Constants
 # ------------------------------------------------------------------ #
 
-PLUGIN_VERSION = "1.3.0"
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Rayekkk/LeGo-Vibe-Control/releases/latest"
 
 LEVEL_NAMES    = ["off", "low", "medium", "high"]
@@ -346,10 +345,12 @@ class Plugin:
                     data = _json.loads(resp.read())
                 latest = data["tag_name"].lstrip("v")
                 asset = next((a for a in data.get("assets", []) if a["name"].endswith(".zip")), None)
+                with open(os.path.join(_plugin_dir, "plugin.json")) as _pf:
+                    current_version = _json.load(_pf).get("version", "0.0.0")
                 latest_t  = tuple(int(x) for x in latest.split("."))
-                current_t = tuple(int(x) for x in PLUGIN_VERSION.split("."))
+                current_t = tuple(int(x) for x in current_version.split("."))
                 return {
-                    "current_version":  PLUGIN_VERSION,
+                    "current_version":  current_version,
                     "latest_version":   latest,
                     "update_available": latest_t > current_t,
                     "download_url":     asset["browser_download_url"] if asset else None,
