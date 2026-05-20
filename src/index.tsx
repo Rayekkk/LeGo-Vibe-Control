@@ -114,22 +114,31 @@ class SettingsManager {
     this.listeners.forEach((fn) => fn());
   }
 
-  // Load profiles from backend
-  static async init() {
-    const [s, gp] = await Promise.all([getSettings(), getGameProfiles()]);
-    this.perApp = gp || {};
-    // Seed DEFAULT_APP from current backend settings
-    if (!this.perApp[DEFAULT_APP]) {
-      this.perApp[DEFAULT_APP] = {
-        overwrite: false,
-        settings: {
-          level: s.level,
-          mode: s.mode ?? 0,
-          touchpadIntensity: s.touchpad_intensity ?? 2,
-          touchpadEnabled: s.touchpad_enabled ?? true,
-        },
-      };
+  private static _initPromise: Promise<void> | null = null;
+
+  // Load profiles from backend — deduplicated so concurrent calls share one fetch
+  static init(): Promise<void> {
+    if (!this._initPromise) {
+      this._initPromise = (async () => {
+        const [s, gp] = await Promise.all([getSettings(), getGameProfiles()]);
+        this.perApp = gp || {};
+        if (!this.perApp[DEFAULT_APP]) {
+          this.perApp[DEFAULT_APP] = {
+            overwrite: false,
+            settings: {
+              level: s.level,
+              mode: s.mode ?? 0,
+              touchpadIntensity: s.touchpad_intensity ?? 2,
+              touchpadEnabled: s.touchpad_enabled ?? true,
+            },
+          };
+        }
+      })().catch((e) => {
+        this._initPromise = null;
+        throw e;
+      });
     }
+    return this._initPromise;
   }
 
   // Save all profiles to backend
@@ -243,10 +252,10 @@ const styles = {
     fontSize: "10px", color: "rgba(255,255,255,0.4)",
     fontFamily: "monospace", marginTop: "2px",
   },
-  perGameTag: {
-    fontSize: "10px", padding: "1px 5px", borderRadius: "3px",
-    background: "rgba(96,165,250,0.2)", color: "rgba(96,165,250,0.9)",
-    fontWeight: "bold", marginLeft: "6px",
+  profileTag: {
+    fontSize: "11px", fontWeight: "bold", color: "#fff",
+    background: "rgba(74,222,128,0.25)", border: "1px solid rgba(74,222,128,0.5)",
+    borderRadius: "3px", padding: "0px 5px", fontFamily: "monospace",
   },
 };
 
@@ -305,11 +314,10 @@ const LGoVibeControl = () => {
     })();
   }, [syncUI]);
 
-  // Listen for app changes and setting changes
+  // Listen for setting changes (game-change sync comes via SettingsManager.notify())
   useEffect(() => {
-    const unsub1 = RunningApps.listen(() => syncUI());
-    const unsub2 = SettingsManager.onChange(syncUI);
-    return () => { unsub1(); unsub2(); };
+    const unsub = SettingsManager.onChange(syncUI);
+    return () => { unsub(); };
   }, [syncUI]);
 
   // Handlers
@@ -321,6 +329,8 @@ const LGoVibeControl = () => {
       setLevel(res.level);
       SettingsManager.set("level", res.level);
       _prevHWSettings = SettingsManager.current();
+    } catch {
+      setLevel(SettingsManager.current().level);
     } finally { setApplying(false); }
   }, []);
 
@@ -332,6 +342,8 @@ const LGoVibeControl = () => {
       SettingsManager.set("mode", res.mode);
       _prevHWSettings = SettingsManager.current();
       void testVibration(350);
+    } catch {
+      setMode(SettingsManager.current().mode);
     } finally { setApplying(false); }
   }, []);
 
@@ -342,14 +354,21 @@ const LGoVibeControl = () => {
       setTpIntensity(res.level);
       SettingsManager.set("touchpadIntensity", res.level);
       _prevHWSettings = SettingsManager.current();
+    } catch {
+      setTpIntensity(SettingsManager.current().touchpadIntensity);
     } finally { setApplying(false); }
   }, []);
 
   const handleTpToggle = useCallback(async (val: boolean) => {
-    setTpEnabled(val);
-    await setTouchpadEnabled(val);
-    SettingsManager.set("touchpadEnabled", val);
-    _prevHWSettings = SettingsManager.current();
+    setApplying(true);
+    try {
+      setTpEnabled(val);
+      await setTouchpadEnabled(val);
+      SettingsManager.set("touchpadEnabled", val);
+      _prevHWSettings = SettingsManager.current();
+    } catch {
+      setTpEnabled(SettingsManager.current().touchpadEnabled);
+    } finally { setApplying(false); }
   }, []);
 
   const handleReset = useCallback(async () => {
@@ -401,11 +420,16 @@ const LGoVibeControl = () => {
     const prev = SettingsManager.current();
     SettingsManager.setOverwrite(val);
     setPerGameOn(val);
-    // If turning off, apply global settings
     if (!val) {
-      await SettingsManager.applyToHW(prev);
-      syncUI();
+      setApplying(true);
+      try {
+        await SettingsManager.applyToHW(prev);
+        _prevHWSettings = SettingsManager.current();
+      } finally {
+        setApplying(false);
+      }
     }
+    syncUI();
   }, [syncUI]);
 
   // Render
@@ -448,20 +472,20 @@ const LGoVibeControl = () => {
       <PanelSection title="Per-Game Profile">
         <PanelSectionRow>
           <ToggleField
-            label={
-              <span>
-                Use per-game profile
-                {perGameOn && overrideable && (
-                  <span style={styles.perGameTag}>{gameName}</span>
-                )}
-              </span>
-            }
+            label="Per Game Profile"
             description={
-              perGameOn && overrideable
-                ? "Settings below apply only to this game."
-                : overrideable
-                  ? "Enable to save separate settings for this game."
-                  : "Launch a game to use per-game profiles."
+              overrideable ? (
+                perGameOn ? (
+                  <span style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                    <span>{gameName}</span>
+                    <span>
+                      <span style={styles.profileTag}>
+                        {MODE_LABELS[mode]} | {LEVEL_LABELS[level]}
+                      </span>
+                    </span>
+                  </span>
+                ) : gameName
+              ) : "Launch a game to use per-game profiles."
             }
             checked={perGameOn && overrideable}
             disabled={!overrideable}
@@ -506,6 +530,7 @@ const LGoVibeControl = () => {
             label="Touchpad vibration"
             description="Enable vibration on touchpad"
             checked={touchpadEnabled}
+            disabled={applying}
             onChange={handleTpToggle}
           />
         </PanelSectionRow>
@@ -542,7 +567,7 @@ const LGoVibeControl = () => {
       <PanelSection title="Updates">
         <PanelSectionRow>
           <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>
-            Installed: <span style={styles.valueTag}>v{updateInfo?.current_version ?? "1.3.0"}</span>
+            Installed: <span style={styles.valueTag}>v{updateInfo?.current_version ?? "1.3.1"}</span>
             {updateInfo?.latest_version && !updateInfo.error && (
               <span> &nbsp; Latest: <span style={styles.valueTag}>v{updateInfo.latest_version}</span></span>
             )}
@@ -605,18 +630,21 @@ let _prevHWSettings: VibeSettings | null = null;
 
 export default definePlugin(() => {
   RunningApps.register();
+  let active = true;
 
-  // Init and register app-change handler at plugin level so it works
-  // even when the QAM panel is closed.
   SettingsManager.init().then(() => {
+    if (!active) return;
     _prevHWSettings = SettingsManager.current();
 
     RunningApps.listen(async () => {
       const prev = _prevHWSettings;
       const next = SettingsManager.current();
-      _prevHWSettings = next;
-      await SettingsManager.applyToHW(prev);
-      SettingsManager.notify();
+      try {
+        await SettingsManager.applyToHW(prev);
+        _prevHWSettings = next;
+      } finally {
+        SettingsManager.notify();
+      }
     });
   });
 
@@ -630,6 +658,9 @@ export default definePlugin(() => {
         <path d="M0 15h2V9H0v6zm3 2h2V7H3v10zm19-8v6h2V9h-2zm-3 8h2V7h-2v10zm-7-1c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm0-8c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z" />
       </svg>
     ),
-    onDismount() { RunningApps.unregister(); },
+    onDismount() {
+      active = false;
+      RunningApps.unregister();
+    },
   };
 });

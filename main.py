@@ -139,11 +139,21 @@ def _int_to_level(value: int) -> str:
     return LEVEL_NAMES[max(0, min(3, int(value)))]
 
 
+# In-memory cache of last values we successfully wrote to sysfs.
+# The hid-lenovo-go driver does not reliably reflect written values
+# on subsequent reads, so we track state ourselves instead of reading back.
+_attr_cache: dict[tuple[str, str], str] = {}
+
+
 def _write_attr(sys_path: str, rel_path: str, value: str) -> bool:
+    key = (sys_path, rel_path)
+    if _attr_cache.get(key) == value:
+        return True
     path = os.path.join(sys_path, rel_path)
     try:
         with open(path, 'w') as f:
             f.write(value + '\n')
+        _attr_cache[key] = value
         decky.logger.info(f"[lego-vibe] {rel_path} = '{value}'")
         return True
     except OSError as exc:
@@ -219,7 +229,7 @@ async def _monitor_hotplug() -> None:
     monitor = _pyudev.Monitor.from_netlink(_udev_ctx)
     monitor.filter_by(subsystem='hid')
     monitor.start()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         while True:
             event = await loop.run_in_executor(None, monitor.poll, 1.0)
@@ -227,14 +237,26 @@ async def _monitor_hotplug() -> None:
                 continue
             if event.action == 'add':
                 if os.path.exists(os.path.join(event.sys_path, _SIGNATURE_ATTR)):
-                    _device_path = event.sys_path
-                    _discovery_method = "udev-hotplug"
                     decky.logger.info(f"[lego-vibe] device connected: {event.sys_path}")
-                    settings.read()
-                    _write_rumble_intensity(settings.getSetting(SETTINGS_KEY_LEVEL, DEFAULT_LEVEL))
-                    _write_rumble_mode(settings.getSetting(SETTINGS_KEY_MODE,       DEFAULT_MODE))
-                    _write_touchpad_intensity(settings.getSetting(SETTINGS_KEY_TP_INTENSITY, DEFAULT_TOUCHPAD_INTENSITY))
-                    _write_touchpad_enabled(settings.getSetting(SETTINGS_KEY_TP_ENABLED,     DEFAULT_TOUCHPAD_ENABLED))
+                    sys_path = event.sys_path
+                    await asyncio.sleep(0.2)
+                    def _apply_on_hotplug(p=sys_path):
+                        for k in [k for k in _attr_cache if k[0] == p]:
+                            del _attr_cache[k]
+                        settings.read()
+                        level  = settings.getSetting(SETTINGS_KEY_LEVEL,        DEFAULT_LEVEL)
+                        mode   = settings.getSetting(SETTINGS_KEY_MODE,         DEFAULT_MODE)
+                        tp_int = settings.getSetting(SETTINGS_KEY_TP_INTENSITY, DEFAULT_TOUCHPAD_INTENSITY)
+                        tp_en  = settings.getSetting(SETTINGS_KEY_TP_ENABLED,   DEFAULT_TOUCHPAD_ENABLED)
+                        mode_str = RUMBLE_MODES[max(0, min(len(RUMBLE_MODES) - 1, int(mode)))]
+                        _write_attr(p, 'rumble_intensity',              _int_to_level(level))
+                        _write_attr(p, 'left_handle/rumble_mode',       mode_str)
+                        _write_attr(p, 'right_handle/rumble_mode',      mode_str)
+                        _write_attr(p, 'touchpad/vibration_intensity',  _int_to_level(tp_int))
+                        _write_attr(p, 'touchpad/vibration_enabled',    "true" if tp_en else "false")
+                    await loop.run_in_executor(None, _apply_on_hotplug)
+                    _device_path = sys_path
+                    _discovery_method = "udev-hotplug"
             elif event.action == 'remove':
                 if _device_path is not None and event.sys_path == _device_path:
                     _device_path = None
@@ -266,7 +288,7 @@ class Plugin:
         _write_rumble_mode(mode)
         _write_touchpad_intensity(tp_int)
         _write_touchpad_enabled(tp_en)
-        _monitor_task = asyncio.ensure_future(_monitor_hotplug())
+        _monitor_task = asyncio.create_task(_monitor_hotplug())
 
     async def _unload(self):
         global _monitor_task
@@ -343,16 +365,22 @@ class Plugin:
                 )
                 with urllib.request.urlopen(req, context=ssl_ctx, timeout=10) as resp:
                     data = _json.loads(resp.read())
+                if "tag_name" not in data:
+                    return {"error": data.get("message", "Unexpected GitHub API response")}
                 latest = data["tag_name"].lstrip("v")
                 asset = next((a for a in data.get("assets", []) if a["name"].endswith(".zip")), None)
                 with open(os.path.join(_plugin_dir, "plugin.json")) as _pf:
                     current_version = _json.load(_pf).get("version", "0.0.0")
-                latest_t  = tuple(int(x) for x in latest.split("."))
-                current_t = tuple(int(x) for x in current_version.split("."))
+                try:
+                    latest_t  = tuple(int(x) for x in latest.split("."))
+                    current_t = tuple(int(x) for x in current_version.split("."))
+                    update_available = latest_t > current_t
+                except ValueError:
+                    update_available = latest != current_version
                 return {
                     "current_version":  current_version,
                     "latest_version":   latest,
-                    "update_available": latest_t > current_t,
+                    "update_available": update_available,
                     "download_url":     asset["browser_download_url"] if asset else None,
                     "asset_name":       asset["name"] if asset else None,
                 }
@@ -372,7 +400,7 @@ class Plugin:
                 )
                 downloads_dir = os.path.join(user.pw_dir, "Downloads") if user else "/home/deck/Downloads"
                 os.makedirs(downloads_dir, exist_ok=True)
-                dest = os.path.join(downloads_dir, asset_name)
+                dest = os.path.join(downloads_dir, os.path.basename(asset_name))
                 if os.path.exists(dest):
                     os.unlink(dest)
                 ssl_ctx = ssl.create_default_context()
@@ -432,10 +460,12 @@ class Plugin:
                 ))
                 fcntl.ioctl(fd, _EVIOCSFF, effect_buf)
                 effect_id = struct.unpack_from('<h', effect_buf, 2)[0]
+                if effect_id < 0:
+                    return {"success": False, "error": f"Driver rejected FF effect (id={effect_id})"}
 
                 def _input_event(ev_type: int, code: int, value: int) -> bytes:
                     t = time.time()
-                    return struct.pack('<qqHHi', int(t), int((t % 1) * 1e6),
+                    return struct.pack('<qqHHi', int(t), int((t % 1) * 1e6) % 1_000_000,
                                       ev_type, code, value)
 
                 os.write(fd, _input_event(_EV_FF, effect_id, 1))
