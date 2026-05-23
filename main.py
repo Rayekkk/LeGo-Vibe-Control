@@ -267,6 +267,23 @@ async def _monitor_hotplug() -> None:
 
 
 # ------------------------------------------------------------------ #
+# Helpers
+# ------------------------------------------------------------------ #
+
+def _xdg_download_dir(home_dir: str) -> str:
+    try:
+        with open(os.path.join(home_dir, ".config", "user-dirs.dirs")) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("XDG_DOWNLOAD_DIR="):
+                    value = line.split("=", 1)[1].strip('"')
+                    return value.replace("$HOME", home_dir)
+    except OSError:
+        pass
+    return os.path.join(home_dir, "Downloads")
+
+
+# ------------------------------------------------------------------ #
 # Plugin class
 # ------------------------------------------------------------------ #
 
@@ -398,7 +415,7 @@ class Plugin:
                      if p.pw_uid >= 1000 and os.path.isdir(p.pw_dir)),
                     None,
                 )
-                downloads_dir = os.path.join(user.pw_dir, "Downloads") if user else "/home/deck/Downloads"
+                downloads_dir = _xdg_download_dir(user.pw_dir) if user else "/home/deck/Downloads"
                 os.makedirs(downloads_dir, exist_ok=True)
                 dest = os.path.join(downloads_dir, os.path.basename(asset_name))
                 if os.path.exists(dest):

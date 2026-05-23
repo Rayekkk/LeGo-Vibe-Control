@@ -567,7 +567,7 @@ const LGoVibeControl = () => {
       <PanelSection title="Updates">
         <PanelSectionRow>
           <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>
-            Installed: <span style={styles.valueTag}>v{updateInfo?.current_version ?? "1.3.2"}</span>
+            Installed: <span style={styles.valueTag}>v{updateInfo?.current_version ?? "1.3.3"}</span>
             {updateInfo?.latest_version && !updateInfo.error && (
               <span> &nbsp; Latest: <span style={styles.valueTag}>v{updateInfo.latest_version}</span></span>
             )}
