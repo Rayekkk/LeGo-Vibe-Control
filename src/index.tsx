@@ -4,12 +4,14 @@ import {
   PanelSectionRow,
   Router,
   SliderField,
+  Spinner,
+  staticClasses,
   ToggleField,
 } from "@decky/ui";
-import { callable, definePlugin } from "@decky/api";
-import { useState, useEffect, useCallback } from "react";
+import { callable, definePlugin, toaster, useQuickAccessVisible } from "@decky/api";
+import { useState, useEffect, useCallback, useRef } from "react";
 
-// Types
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface VibeSettings {
   level: number;
@@ -18,382 +20,498 @@ interface VibeSettings {
   touchpadEnabled: boolean;
 }
 
-interface PerAppEntry {
-  overwrite: boolean;
+interface SettingsResponse {
   settings: VibeSettings;
+  app_id: string;
+  profile_id: string;
+  overwrite: boolean;
 }
 
-type GameProfiles = Record<string, PerAppEntry>;
+interface ApplyResponse {
+  success: boolean;
+  settings: VibeSettings;
+  error?: string;
+}
 
-// Constants
+interface DriverStatus {
+  found: boolean;
+  paths: string[];
+  method: string;
+  ids: string;
+}
+
+interface UpdateInfo {
+  current_version?: string;
+  latest_version?: string;
+  update_available?: boolean;
+  download_url?: string;
+  asset_name?: string;
+  error?: string;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const DEFAULT_APP = "0";
+
 const LEVEL_LABELS = ["Off", "Low", "Medium", "High"];
-const MODE_LABELS  = ["FPS", "Racing", "Standard", "SPG", "RPG"];
+const LEVEL_NOTCHES = ["Off", "Low", "Med", "High"];
 
-// Backend callables
+// Display names for the driver's raw mode values. Anything the driver
+// reports that is not listed here is title-cased at render time, so a new
+// kernel mode shows up without needing a plugin release.
+const MODE_LABELS: Record<string, string> = {
+  fps: "FPS",
+  racing: "Racing",
+  standard: "Standard",
+  spg: "SPG",
+  rpg: "RPG",
+};
+const MODE_NOTCHES: Record<string, string> = {
+  fps: "FPS",
+  racing: "Race",
+  standard: "Std",
+  spg: "SPG",
+  rpg: "RPG",
+};
 
-const getSettings = callable<[], {
-  level: number; mode: number;
-  touchpad_intensity: number; touchpad_enabled: boolean;
-}>("get_settings");
+const FALLBACK_MODES = ["fps", "racing", "standard", "spg", "rpg"];
 
-const setIntensity       = callable<[number],  { success: boolean; level: number }>("set_intensity");
-const setRumbleMode      = callable<[number],  { success: boolean; mode: number }>("set_rumble_mode");
-const setTouchpadIntensity = callable<[number],  { success: boolean; level: number }>("set_touchpad_intensity");
-const setTouchpadEnabled = callable<[boolean], { success: boolean; enabled: boolean }>("set_touchpad_enabled");
-const resetToDefault     = callable<[], { success: boolean; level: number; mode: number; touchpad_intensity: number; touchpad_enabled: boolean }>("reset_to_default");
-const getDriverStatus    = callable<[], { found: boolean; paths: string[]; method: string }>("get_driver_status");
-const testVibration      = callable<[number],  { success: boolean; error?: string }>("test_vibration");
-const checkForUpdates    = callable<[], { current_version?: string; latest_version?: string; update_available?: boolean; download_url?: string; asset_name?: string; error?: string }>("check_for_updates");
-const performUpdate      = callable<[string, string], { success: boolean; path?: string; error?: string }>("perform_update");
+const titleCase = (raw: string) => raw.charAt(0).toUpperCase() + raw.slice(1);
+const modeLabel = (raw: string) => MODE_LABELS[raw] ?? titleCase(raw);
+const modeNotch = (raw: string) => MODE_NOTCHES[raw] ?? titleCase(raw).slice(0, 5);
 
-const getGameProfiles = callable<[], GameProfiles>("get_game_profiles");
-const setGameProfiles = callable<[GameProfiles], { success: boolean }>("set_game_profiles");
+// ── Backend callables ─────────────────────────────────────────────────────────
 
-// Running Apps polling
+const getSettings = callable<[], SettingsResponse>("get_settings");
+const setActiveApp = callable<[string], SettingsResponse & { success: boolean; changed: boolean }>("set_active_app");
 
-type AppChangeHandler = () => void;
+const setIntensity = callable<[number], ApplyResponse>("set_intensity");
+const setRumbleMode = callable<[number], ApplyResponse>("set_rumble_mode");
+const setTouchpadIntensity = callable<[number], ApplyResponse>("set_touchpad_intensity");
+const setTouchpadEnabled = callable<[boolean], ApplyResponse>("set_touchpad_enabled");
+const resetToDefault = callable<[], ApplyResponse>("reset_to_default");
+const reapply = callable<[], ApplyResponse>("reapply");
 
-class RunningApps {
-  private static listeners: AppChangeHandler[] = [];
-  private static lastAppId = DEFAULT_APP;
-  private static intervalId: ReturnType<typeof setInterval> | undefined;
+const setProfileOverwrite = callable<[string, boolean, string], ApplyResponse & { overwrite: boolean }>("set_profile_overwrite");
 
-  static register() {
-    if (!this.intervalId) {
-      this.intervalId = setInterval(() => this.poll(), 100);
+const getDriverStatus = callable<[], DriverStatus>("get_driver_status");
+const getCapabilities = callable<[], { intensity: string[]; mode: string[]; tp_intensity: string[] }>("get_capabilities");
+const getVersion = callable<[], { version: string }>("get_version");
+const testVibration = callable<[number], { success: boolean; error?: string }>("test_vibration");
+const checkForUpdates = callable<[], UpdateInfo>("check_for_updates");
+const performUpdate = callable<[string, string], { success: boolean; path?: string; error?: string }>("perform_update");
+
+// ── Toasts ────────────────────────────────────────────────────────────────────
+
+const notify = (title: string, body: string) => {
+  try {
+    toaster.toast({ title, body, duration: 4000 });
+  } catch {
+    console.error(`[lego-vibe] ${title}: ${body}`);
+  }
+};
+
+const notifyFailure = (title: string, err: unknown) => {
+  const body = err instanceof Error ? err.message : String(err ?? "Unknown error");
+  console.error(`[lego-vibe] ${title}`, err);
+  notify(title, body);
+};
+
+/** Report a backend result that carries its own error string. */
+const checkResult = (title: string, res: { success: boolean; error?: string }) => {
+  if (!res.success) notify(title, res.error ?? "The driver rejected the change");
+  return res.success;
+};
+
+// ── Running app watcher ───────────────────────────────────────────────────────
+
+type SettingsListener = (res: SettingsResponse) => void;
+
+/**
+ * Tracks the foreground game and tells the backend about it, so the backend
+ * can resolve per-game profiles on its own - including for hotplug and
+ * resume, which never go through the UI.
+ *
+ * This used to poll every 100 ms. It now reacts to Steam's app lifetime
+ * notifications, with a slow interval purely as a safety net because
+ * Router.MainRunningApp can change without a lifetime event firing.
+ */
+class AppWatcher {
+  private static listeners: SettingsListener[] = [];
+  private static currentId = DEFAULT_APP;
+  private static timer: ReturnType<typeof setInterval> | undefined;
+  private static unsubs: Array<() => void> = [];
+  private static started = false;
+  private static busy = false;
+
+  static activeId(): string {
+    try {
+      return String((Router as any)?.MainRunningApp?.appid || DEFAULT_APP);
+    } catch {
+      return DEFAULT_APP;
     }
   }
 
-  static unregister() {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = undefined;
-    }
-    this.listeners = [];
-  }
-
-  private static poll() {
-    const cur = this.active();
-    if (cur !== this.lastAppId) {
-      this.lastAppId = cur;
-      this.listeners.forEach((fn) => fn());
+  static displayName(): string {
+    try {
+      const app = (Router as any)?.MainRunningApp;
+      return app?.appid ? (app.display_name || `App ${app.appid}`) : "";
+    } catch {
+      return "";
     }
   }
 
-  static listen(fn: AppChangeHandler): () => void {
+  static listen(fn: SettingsListener): () => void {
     this.listeners.push(fn);
     return () => {
       this.listeners = this.listeners.filter((f) => f !== fn);
     };
   }
 
-  static active(): string {
-    return String((Router as any)?.MainRunningApp?.appid || 0);
-  }
+  static start() {
+    if (this.started) return;
+    this.started = true;
+    this.currentId = this.activeId();
 
-  static displayName(): string {
-    const app = (Router as any)?.MainRunningApp;
-    return (app && app.appid) ? (app.display_name || `App ${app.appid}`) : "";
-  }
-}
+    // Push the starting state so the backend is never out of sync with us.
+    void setActiveApp(this.currentId).catch((e) =>
+      console.error("[lego-vibe] initial setActiveApp failed", e),
+    );
 
-// SettingsManager
+    const steam = (window as any).SteamClient;
 
-class SettingsManager {
-  static perApp: GameProfiles = {};
-  private static listeners: Array<() => void> = [];
-
-  static onChange(fn: () => void) {
-    this.listeners.push(fn);
-    return () => { this.listeners = this.listeners.filter((f) => f !== fn); };
-  }
-
-  static notify() {
-    this.listeners.forEach((fn) => fn());
-  }
-
-  private static _initPromise: Promise<void> | null = null;
-
-  // Load profiles from backend — deduplicated so concurrent calls share one fetch
-  static init(): Promise<void> {
-    if (!this._initPromise) {
-      this._initPromise = (async () => {
-        const [s, gp] = await Promise.all([getSettings(), getGameProfiles()]);
-        this.perApp = gp || {};
-        if (!this.perApp[DEFAULT_APP]) {
-          this.perApp[DEFAULT_APP] = {
-            overwrite: false,
-            settings: {
-              level: s.level,
-              mode: s.mode ?? 0,
-              touchpadIntensity: s.touchpad_intensity ?? 2,
-              touchpadEnabled: s.touchpad_enabled ?? true,
-            },
-          };
-        }
-      })().catch((e) => {
-        this._initPromise = null;
-        throw e;
+    try {
+      const reg = steam?.GameSessions?.RegisterForAppLifetimeNotifications?.(() => {
+        // Router.MainRunningApp lags the notification slightly.
+        setTimeout(() => void this.check(), 300);
       });
+      if (reg?.unregister) this.unsubs.push(() => reg.unregister());
+    } catch (e) {
+      console.warn("[lego-vibe] app lifetime notifications unavailable", e);
     }
-    return this._initPromise;
-  }
 
-  // Save all profiles to backend
-  private static persist() {
-    void setGameProfiles({ ...this.perApp });
-  }
-
-  // Get the resolved appId
-  static resolvedAppId(): string {
-    const appId = RunningApps.active();
-    if (appId !== DEFAULT_APP && this.perApp[appId]?.overwrite) {
-      return appId;
+    try {
+      const reg = steam?.System?.RegisterForOnResumeFromSuspend?.(() => {
+        // The controller comes back at its firmware defaults, and the
+        // backend's write cache would otherwise skip the rewrite.
+        void reapply()
+          .then((res) => {
+            if (!res.success) console.warn("[lego-vibe] reapply after resume failed");
+          })
+          .catch((e) => console.error("[lego-vibe] reapply after resume threw", e));
+      });
+      if (reg?.unregister) this.unsubs.push(() => reg.unregister());
+    } catch (e) {
+      console.warn("[lego-vibe] resume notifications unavailable", e);
     }
-    return DEFAULT_APP;
+
+    this.timer = setInterval(() => void this.check(), 2000);
   }
 
-  // Get the currently active settings
-  static current(): VibeSettings {
-    const entry = this.perApp[this.resolvedAppId()];
-    return entry ? { ...entry.settings } : { level: 2, mode: 0, touchpadIntensity: 2, touchpadEnabled: true };
-  }
-
-  static isOverwrite(): boolean {
-    const appId = RunningApps.active();
-    return appId !== DEFAULT_APP && (this.perApp[appId]?.overwrite ?? false);
-  }
-
-  // Toggle per-game override on/off for the current running game
-  static setOverwrite(val: boolean) {
-    const appId = RunningApps.active();
-    if (appId === DEFAULT_APP) return;
-    if (val) {
-      // Enabling: create profile from current settings
-      if (!this.perApp[appId]) {
-        this.perApp[appId] = { overwrite: true, settings: { ...this.current() } };
-      } else {
-        this.perApp[appId].overwrite = true;
-      }
-    } else {
-      // Disabling: remove override flag
-      if (this.perApp[appId]) {
-        this.perApp[appId].overwrite = false;
+  static stop() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+    for (const off of this.unsubs) {
+      try {
+        off();
+      } catch {
+        /* the subscription may already be gone */
       }
     }
-    this.persist();
+    this.unsubs = [];
+    this.listeners = [];
+    this.currentId = DEFAULT_APP;
+    this.started = false;
   }
 
-  // Update a setting in the resolved profile
-  static set<K extends keyof VibeSettings>(key: K, value: VibeSettings[K]) {
-    const appId = this.resolvedAppId();
-    if (!this.perApp[appId]) {
-      this.perApp[appId] = { overwrite: false, settings: { ...this.current() } };
-    }
-    this.perApp[appId].settings[key] = value;
-    this.persist();
-  }
-
-  static setAll(s: VibeSettings) {
-    const appId = this.resolvedAppId();
-    if (!this.perApp[appId]) {
-      this.perApp[appId] = { overwrite: false, settings: { ...s } };
-    } else {
-      this.perApp[appId].settings = { ...s };
-    }
-    this.persist();
-  }
-
-  static async applyToHW(prev: VibeSettings | null) {
-    const s = this.current();
-    if (!prev || prev.level !== s.level) {
-      await setIntensity(s.level);
-    }
-    if (!prev || prev.mode !== s.mode) {
-      await setRumbleMode(s.mode);
-    }
-    if (!prev || prev.touchpadIntensity !== s.touchpadIntensity) {
-      await setTouchpadIntensity(s.touchpadIntensity);
-    }
-    if (!prev || prev.touchpadEnabled !== s.touchpadEnabled) {
-      await setTouchpadEnabled(s.touchpadEnabled);
+  private static async check() {
+    if (this.busy) return;
+    const id = this.activeId();
+    if (id === this.currentId) return;
+    this.busy = true;
+    try {
+      this.currentId = id;
+      const res = await setActiveApp(id);
+      this.listeners.forEach((fn) => fn(res));
+    } catch (e) {
+      console.error("[lego-vibe] setActiveApp failed", e);
+    } finally {
+      this.busy = false;
     }
   }
 }
 
-// ------------------------------------------------------------------ //
-// Styles
-// ------------------------------------------------------------------ //
+// ── Styles - Steam theme variables with hardcoded fallbacks ───────────────────
+
+const OK_COLOR = "var(--gpColor-Green, #4ade80)";
+const BAD_COLOR = "var(--gpColor-Red, #f87171)";
+const WARN_COLOR = "var(--gpColor-Yellow, #fbbf24)";
+const DIM_COLOR = "var(--gpColor-TextMuted, rgba(255,255,255,0.5))";
 
 const styles = {
   container: { display: "flex", flexDirection: "column" as const, gap: "4px" },
   statusRow: { display: "flex", alignItems: "center", gap: "8px", padding: "4px 0" },
   dot: (ok: boolean) => ({
-    width: "8px", height: "8px", borderRadius: "50%",
-    backgroundColor: ok ? "#4ade80" : "#f87171", flexShrink: 0,
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    backgroundColor: ok ? OK_COLOR : BAD_COLOR,
+    flexShrink: 0,
   }),
   statusText: (ok: boolean) => ({
-    fontSize: "11px", color: ok ? "#4ade80" : "#f87171",
-    fontFamily: "monospace", wordBreak: "break-all" as const,
+    fontSize: "11px",
+    color: ok ? OK_COLOR : BAD_COLOR,
+    fontFamily: "monospace",
+    wordBreak: "break-all" as const,
   }),
   valueTag: {
-    fontSize: "13px", fontWeight: "bold", color: "#fff",
-    background: "rgba(255,255,255,0.1)", borderRadius: "4px",
-    padding: "1px 6px", fontFamily: "monospace",
+    fontSize: "13px",
+    fontWeight: "bold",
+    color: "var(--gpColor-White, #fff)",
+    background: "rgba(255,255,255,0.1)",
+    borderRadius: "4px",
+    padding: "1px 6px",
+    fontFamily: "monospace",
   },
-  warningBox: {
-    background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.4)",
-    borderRadius: "6px", padding: "8px 10px", fontSize: "11px",
-    color: "rgba(251,191,36,0.9)", lineHeight: "1.5", marginTop: "4px",
+  infoBox: {
+    background: "rgba(251,191,36,0.15)",
+    border: "1px solid rgba(251,191,36,0.4)",
+    borderRadius: "6px",
+    padding: "8px 10px",
+    fontSize: "11px",
+    color: WARN_COLOR,
+    lineHeight: "1.5",
+    marginTop: "4px",
+  },
+  errorBox: {
+    background: "rgba(248,113,113,0.1)",
+    border: "1px solid rgba(248,113,113,0.4)",
+    borderRadius: "6px",
+    padding: "8px 10px",
+    fontSize: "11px",
+    color: BAD_COLOR,
+    lineHeight: "1.5",
+    marginTop: "4px",
   },
   methodText: {
-    fontSize: "10px", color: "rgba(255,255,255,0.4)",
-    fontFamily: "monospace", marginTop: "2px",
+    fontSize: "10px",
+    color: DIM_COLOR,
+    fontFamily: "monospace",
+    marginTop: "2px",
   },
   profileTag: {
-    fontSize: "11px", fontWeight: "bold", color: "#fff",
-    background: "rgba(74,222,128,0.25)", border: "1px solid rgba(74,222,128,0.5)",
-    borderRadius: "3px", padding: "0px 5px", fontFamily: "monospace",
+    fontSize: "11px",
+    fontWeight: "bold",
+    color: "var(--gpColor-White, #fff)",
+    background: "rgba(74,222,128,0.25)",
+    border: "1px solid rgba(74,222,128,0.5)",
+    borderRadius: "3px",
+    padding: "0px 5px",
+    fontFamily: "monospace",
   },
 };
 
-// ------------------------------------------------------------------ //
-// Main component
-// ------------------------------------------------------------------ //
+// ── Main component ────────────────────────────────────────────────────────────
+
+const DEFAULT_SETTINGS: VibeSettings = {
+  level: 2,
+  mode: 0,
+  touchpadIntensity: 2,
+  touchpadEnabled: true,
+};
 
 const LGoVibeControl = () => {
-  const [level,             setLevel]        = useState(2);
-  const [mode,              setMode]         = useState(0);
-  const [touchpadIntensity, setTpIntensity]  = useState(2);
-  const [touchpadEnabled,   setTpEnabled]    = useState(true);
-  const [driverFound,       setDriverFound]  = useState(false);
-  const [driverPaths,       setDriverPaths]  = useState([] as string[]);
-  const [driverMethod,      setDriverMethod] = useState("");
-  const [loading,           setLoading]      = useState(true);
-  const [applying,          setApplying]     = useState(false);
-  const [testing,           setTesting]      = useState(false);
-  const [updateInfo,        setUpdateInfo]   = useState<{ current_version?: string; latest_version?: string; update_available?: boolean; download_url?: string; asset_name?: string; error?: string } | null>(null);
-  const [checking,          setChecking]     = useState(false);
-  const [downloading,       setDownloading]  = useState(false);
-  const [downloadPath,      setDownloadPath] = useState<string | null>(null);
+  const [settings, setSettings] = useState<VibeSettings>(DEFAULT_SETTINGS);
+  const [modes, setModes] = useState<string[]>(FALLBACK_MODES);
+  const [driver, setDriver] = useState<DriverStatus | null>(null);
+  const [version, setVersion] = useState("");
 
-  const [perGameOn,    setPerGameOn]    = useState(false);
-  const [overrideable, setOverrideable] = useState(false);
-  const [gameName,     setGameName]     = useState("");
+  const [appId, setAppId] = useState(DEFAULT_APP);
+  const [gameName, setGameName] = useState("");
+  const [perGameOn, setPerGameOn] = useState(false);
 
-  const syncUI = useCallback(() => {
-    const s = SettingsManager.current();
-    setLevel(s.level);
-    setMode(s.mode);
-    setTpIntensity(s.touchpadIntensity);
-    setTpEnabled(s.touchpadEnabled);
-    setPerGameOn(SettingsManager.isOverwrite());
-    setOverrideable(RunningApps.active() !== DEFAULT_APP);
-    setGameName(RunningApps.displayName());
+  const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadPath, setDownloadPath] = useState<string | null>(null);
+
+  const visible = useQuickAccessVisible();
+
+  // Coalesces a slider drag into a single backend call. The UI still moves
+  // immediately; only the RPC and its disk commit are deferred.
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const debounce = useCallback((key: string, fn: () => void, delay = 150) => {
+    const pending = timers.current[key];
+    if (pending) clearTimeout(pending);
+    timers.current[key] = setTimeout(fn, delay);
   }, []);
 
-  // Init
+  useEffect(
+    () => () => {
+      for (const t of Object.values(timers.current)) clearTimeout(t);
+    },
+    [],
+  );
+
+  const adoptResponse = useCallback((res: SettingsResponse) => {
+    setSettings(res.settings);
+    setAppId(res.app_id);
+    setPerGameOn(res.overwrite);
+    setGameName(AppWatcher.displayName());
+  }, []);
+
+  const refreshDriver = useCallback(async () => {
+    try {
+      setDriver(await getDriverStatus());
+    } catch (e) {
+      console.error("[lego-vibe] getDriverStatus failed", e);
+    }
+  }, []);
+
+  // Initial load
   useEffect(() => {
     (async () => {
       try {
-        const d = await getDriverStatus();
-        setDriverFound(d.found);
-        setDriverPaths(d.paths);
-        setDriverMethod(d.method ?? "");
-        // SettingsManager.init is called from definePlugin, but may not
-        // have finished yet on first mount, so call it again (it's idempotent).
-        await SettingsManager.init();
-        syncUI();
+        const [current, status, caps, ver] = await Promise.all([
+          getSettings(),
+          getDriverStatus(),
+          getCapabilities().catch(() => ({ mode: FALLBACK_MODES } as any)),
+          getVersion().catch(() => ({ version: "" })),
+        ]);
+        adoptResponse(current);
+        setDriver(status);
+        setModes(caps?.mode?.length ? caps.mode : FALLBACK_MODES);
+        setVersion(ver.version ?? "");
       } catch (e) {
-        console.error("[lego-vibe] init error", e);
+        notifyFailure("LeGo Vibe Control failed to load", e);
       } finally {
         setLoading(false);
       }
     })();
-  }, [syncUI]);
+  }, [adoptResponse]);
 
-  // Listen for setting changes (game-change sync comes via SettingsManager.notify())
+  // The driver dot went stale whenever the controller was hotplugged with the
+  // panel closed, so re-check every time the panel is opened.
   useEffect(() => {
-    const unsub = SettingsManager.onChange(syncUI);
-    return () => { unsub(); };
-  }, [syncUI]);
+    if (visible && !loading) void refreshDriver();
+  }, [visible, loading, refreshDriver]);
+
+  // Game changes are applied by the backend; just adopt what it reports.
+  useEffect(() => AppWatcher.listen(adoptResponse), [adoptResponse]);
 
   // Handlers
 
-  const handleLevelChange = useCallback(async (val: number) => {
-    setApplying(true);
-    try {
-      const res = await setIntensity(val);
-      setLevel(res.level);
-      SettingsManager.set("level", res.level);
-      _prevHWSettings = SettingsManager.current();
-    } catch {
-      setLevel(SettingsManager.current().level);
-    } finally { setApplying(false); }
-  }, []);
+  const applyField = useCallback(
+    async (key: string, optimistic: Partial<VibeSettings>, call: () => Promise<ApplyResponse>) => {
+      setSettings((prev) => ({ ...prev, ...optimistic }));
+      debounce(key, () => {
+        setApplying(true);
+        call()
+          .then((res) => {
+            checkResult("Could not apply setting", res);
+            if (res.settings) setSettings(res.settings);
+          })
+          .catch((e) => {
+            notifyFailure("Could not apply setting", e);
+            void getSettings().then(adoptResponse).catch(() => undefined);
+          })
+          .finally(() => setApplying(false));
+      });
+    },
+    [debounce, adoptResponse],
+  );
 
-  const handleModeChange = useCallback(async (val: number) => {
-    setApplying(true);
-    try {
-      const res = await setRumbleMode(val);
-      setMode(res.mode);
-      SettingsManager.set("mode", res.mode);
-      _prevHWSettings = SettingsManager.current();
-      void testVibration(350);
-    } catch {
-      setMode(SettingsManager.current().mode);
-    } finally { setApplying(false); }
-  }, []);
+  const handleLevel = useCallback(
+    (val: number) => void applyField("level", { level: val }, () => setIntensity(val)),
+    [applyField],
+  );
 
-  const handleTpIntensityChange = useCallback(async (val: number) => {
-    setApplying(true);
-    try {
-      const res = await setTouchpadIntensity(val);
-      setTpIntensity(res.level);
-      SettingsManager.set("touchpadIntensity", res.level);
-      _prevHWSettings = SettingsManager.current();
-    } catch {
-      setTpIntensity(SettingsManager.current().touchpadIntensity);
-    } finally { setApplying(false); }
-  }, []);
+  const handleMode = useCallback(
+    // No sample is played here on purpose: the controller firmware already
+    // demonstrates the new pattern. Adding our own put a second rumble on
+    // top of it, which is why the same mode felt different every time.
+    (val: number) => void applyField("mode", { mode: val }, () => setRumbleMode(val)),
+    [applyField],
+  );
 
-  const handleTpToggle = useCallback(async (val: boolean) => {
-    setApplying(true);
-    try {
-      setTpEnabled(val);
-      await setTouchpadEnabled(val);
-      SettingsManager.set("touchpadEnabled", val);
-      _prevHWSettings = SettingsManager.current();
-    } catch {
-      setTpEnabled(SettingsManager.current().touchpadEnabled);
-    } finally { setApplying(false); }
-  }, []);
+  const handleTpIntensity = useCallback(
+    (val: number) =>
+      void applyField("tpIntensity", { touchpadIntensity: val }, () => setTouchpadIntensity(val)),
+    [applyField],
+  );
+
+  const handleTpToggle = useCallback(
+    (val: boolean) =>
+      void applyField("tpEnabled", { touchpadEnabled: val }, () => setTouchpadEnabled(val)),
+    [applyField],
+  );
 
   const handleReset = useCallback(async () => {
     setApplying(true);
     try {
       const res = await resetToDefault();
-      const snap: VibeSettings = {
-        level: res.level, mode: res.mode,
-        touchpadIntensity: res.touchpad_intensity,
-        touchpadEnabled: res.touchpad_enabled,
-      };
-      setLevel(snap.level); setMode(snap.mode);
-      setTpIntensity(snap.touchpadIntensity); setTpEnabled(snap.touchpadEnabled);
-      SettingsManager.setAll(snap);
-      _prevHWSettings = SettingsManager.current();
-    } finally { setApplying(false); }
+      if (checkResult("Reset failed", res)) {
+        setSettings(res.settings);
+        notify("LeGo Vibe Control", "Settings restored to defaults");
+      }
+    } catch (e) {
+      notifyFailure("Reset failed", e);
+    } finally {
+      setApplying(false);
+    }
   }, []);
+
+  const handleTest = useCallback(async () => {
+    setTesting(true);
+    try {
+      const res = await testVibration(500);
+      checkResult("Test vibration failed", res);
+    } catch (e) {
+      notifyFailure("Test vibration failed", e);
+    } finally {
+      setTesting(false);
+    }
+  }, []);
+
+  const handlePerGameToggle = useCallback(
+    async (val: boolean) => {
+      setPerGameOn(val);
+      setApplying(true);
+      try {
+        // The backend applies the resolved profile for us, which is what the
+        // old frontend skipped when *enabling* a profile - the UI showed the
+        // game's values while the hardware kept the global ones.
+        const res = await setProfileOverwrite(appId, val, AppWatcher.displayName());
+        if (checkResult("Could not switch profile", res)) {
+          setSettings(res.settings);
+        } else {
+          setPerGameOn(!val);
+        }
+      } catch (e) {
+        setPerGameOn(!val);
+        notifyFailure("Could not switch profile", e);
+      } finally {
+        setApplying(false);
+      }
+    },
+    [appId],
+  );
 
   const handleCheckUpdate = useCallback(async () => {
     setChecking(true);
     setUpdateInfo(null);
     setDownloadPath(null);
     try {
-      const res = await checkForUpdates();
-      setUpdateInfo(res);
+      setUpdateInfo(await checkForUpdates());
+    } catch (e) {
+      notifyFailure("Update check failed", e);
+      setUpdateInfo({ error: e instanceof Error ? e.message : String(e) });
     } finally {
       setChecking(false);
     }
@@ -405,42 +523,32 @@ const LGoVibeControl = () => {
     try {
       const res = await performUpdate(updateInfo.download_url, updateInfo.asset_name);
       if (res.success && res.path) setDownloadPath(res.path);
-      else setUpdateInfo({ ...updateInfo, error: res.error });
+      else {
+        setUpdateInfo({ ...updateInfo, error: res.error });
+        notify("Download failed", res.error ?? "Unknown error");
+      }
+    } catch (e) {
+      notifyFailure("Download failed", e);
     } finally {
       setDownloading(false);
     }
   }, [updateInfo]);
-
-  const handleTest = useCallback(async () => {
-    setTesting(true);
-    try { await testVibration(500); } finally { setTesting(false); }
-  }, []);
-
-  const handlePerGameToggle = useCallback(async (val: boolean) => {
-    const prev = SettingsManager.current();
-    SettingsManager.setOverwrite(val);
-    setPerGameOn(val);
-    if (!val) {
-      setApplying(true);
-      try {
-        await SettingsManager.applyToHW(prev);
-        _prevHWSettings = SettingsManager.current();
-      } finally {
-        setApplying(false);
-      }
-    }
-    syncUI();
-  }, [syncUI]);
 
   // Render
 
   if (loading) {
     return (
       <PanelSection>
-        <PanelSectionRow><span>Loading...</span></PanelSectionRow>
+        <PanelSectionRow>
+          <Spinner />
+        </PanelSectionRow>
       </PanelSection>
     );
   }
+
+  const driverFound = driver?.found ?? false;
+  const gameRunning = appId !== DEFAULT_APP;
+  const modeName = modes[settings.mode] ?? FALLBACK_MODES[0];
 
   return (
     <div style={styles.container}>
@@ -451,19 +559,23 @@ const LGoVibeControl = () => {
             <div>
               <span style={styles.statusText(driverFound)}>
                 {driverFound
-                  ? driverPaths[0] ?? "hid-lenovo-go found"
+                  ? driver?.paths[0] ?? "hid-lenovo-go found"
                   : "hid-lenovo-go driver not found"}
               </span>
-              {driverFound && driverMethod && (
-                <div style={styles.methodText}>via: {driverMethod}</div>
+              {driverFound && driver?.method && (
+                <div style={styles.methodText}>
+                  via: {driver.method}
+                  {driver.ids ? ` (${driver.ids})` : ""}
+                </div>
               )}
             </div>
           </div>
         </PanelSectionRow>
         {!driverFound && (
           <PanelSectionRow>
-            <div style={styles.warningBox}>
-              The hid-lenovo-go sysfs endpoint was not detected. Requires SteamOS 3.8+ / Kernel 6.18+ with the hid-lenovo-go module loaded on Legion Go 2 hardware.
+            <div style={styles.infoBox}>
+              The hid-lenovo-go sysfs endpoint was not detected. Requires SteamOS 3.8+ / Kernel
+              6.18+ with the hid-lenovo-go module loaded on Legion Go hardware.
             </div>
           </PanelSectionRow>
         )}
@@ -474,21 +586,25 @@ const LGoVibeControl = () => {
           <ToggleField
             label="Per Game Profile"
             description={
-              overrideable ? (
+              gameRunning ? (
                 perGameOn ? (
                   <span style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
                     <span>{gameName}</span>
                     <span>
                       <span style={styles.profileTag}>
-                        {MODE_LABELS[mode]} | {LEVEL_LABELS[level]}
+                        {modeLabel(modeName)} | {LEVEL_LABELS[settings.level]}
                       </span>
                     </span>
                   </span>
-                ) : gameName
-              ) : "Launch a game to use per-game profiles."
+                ) : (
+                  gameName
+                )
+              ) : (
+                "Launch a game to use per-game profiles."
+              )
             }
-            checked={perGameOn && overrideable}
-            disabled={!overrideable}
+            checked={perGameOn && gameRunning}
+            disabled={!gameRunning || applying}
             onChange={handlePerGameToggle}
           />
         </PanelSectionRow>
@@ -498,28 +614,35 @@ const LGoVibeControl = () => {
         <PanelSectionRow>
           <SliderField
             label="Intensity"
-            description={<span>Level: <span style={styles.valueTag}>{LEVEL_LABELS[level]}</span></span>}
-            value={level} min={0} max={3} step={1} notchCount={4}
-            notchLabels={[
-              { notchIndex: 0, label: "Off" }, { notchIndex: 1, label: "Low" },
-              { notchIndex: 2, label: "Med" }, { notchIndex: 3, label: "High" },
-            ]}
-            disabled={applying}
-            onChange={(val: number) => { setLevel(val); void handleLevelChange(val); }}
+            description={
+              <span>
+                Level: <span style={styles.valueTag}>{LEVEL_LABELS[settings.level]}</span>
+              </span>
+            }
+            value={settings.level}
+            min={0}
+            max={3}
+            step={1}
+            notchCount={4}
+            notchLabels={LEVEL_NOTCHES.map((label, notchIndex) => ({ notchIndex, label }))}
+            onChange={handleLevel}
           />
         </PanelSectionRow>
         <PanelSectionRow>
           <SliderField
             label="Mode"
-            description={<span>Mode: <span style={styles.valueTag}>{MODE_LABELS[mode]}</span></span>}
-            value={mode} min={0} max={4} step={1} notchCount={5}
-            notchLabels={[
-              { notchIndex: 0, label: "FPS" }, { notchIndex: 1, label: "Race" },
-              { notchIndex: 2, label: "Std" }, { notchIndex: 3, label: "SPG" },
-              { notchIndex: 4, label: "RPG" },
-            ]}
-            disabled={applying}
-            onChange={(val: number) => { setMode(val); void handleModeChange(val); }}
+            description={
+              <span>
+                Mode: <span style={styles.valueTag}>{modeLabel(modeName)}</span>
+              </span>
+            }
+            value={settings.mode}
+            min={0}
+            max={Math.max(0, modes.length - 1)}
+            step={1}
+            notchCount={modes.length}
+            notchLabels={modes.map((raw, notchIndex) => ({ notchIndex, label: modeNotch(raw) }))}
+            onChange={handleMode}
           />
         </PanelSectionRow>
       </PanelSection>
@@ -529,31 +652,39 @@ const LGoVibeControl = () => {
           <ToggleField
             label="Touchpad vibration"
             description="Enable vibration on touchpad"
-            checked={touchpadEnabled}
-            disabled={applying}
+            checked={settings.touchpadEnabled}
             onChange={handleTpToggle}
           />
         </PanelSectionRow>
         <PanelSectionRow>
           <SliderField
             label="Touchpad intensity"
-            description={<span>Level: <span style={styles.valueTag}>{LEVEL_LABELS[touchpadIntensity]}</span></span>}
-            value={touchpadIntensity} min={0} max={3} step={1} notchCount={4}
-            notchLabels={[
-              { notchIndex: 0, label: "Off" }, { notchIndex: 1, label: "Low" },
-              { notchIndex: 2, label: "Med" }, { notchIndex: 3, label: "High" },
-            ]}
-            disabled={applying || !touchpadEnabled}
-            onChange={(val: number) => { setTpIntensity(val); void handleTpIntensityChange(val); }}
+            description={
+              <span>
+                Level:{" "}
+                <span style={styles.valueTag}>{LEVEL_LABELS[settings.touchpadIntensity]}</span>
+              </span>
+            }
+            value={settings.touchpadIntensity}
+            min={0}
+            max={3}
+            step={1}
+            notchCount={4}
+            notchLabels={LEVEL_NOTCHES.map((label, notchIndex) => ({ notchIndex, label }))}
+            disabled={!settings.touchpadEnabled}
+            onChange={handleTpIntensity}
           />
         </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Actions">
         <PanelSectionRow>
-          <ButtonItem layout="below"
-            description="Tests current intensity & mode."
-            onClick={handleTest} disabled={applying || testing}>
+          <ButtonItem
+            layout="below"
+            description="Tests current intensity and mode."
+            onClick={handleTest}
+            disabled={applying || testing}
+          >
             {testing ? "Vibrating..." : "Test Vibration (0.5s)"}
           </ButtonItem>
         </PanelSectionRow>
@@ -566,23 +697,25 @@ const LGoVibeControl = () => {
 
       <PanelSection title="Updates">
         <PanelSectionRow>
-          <div style={{ fontSize: "12px", color: "rgba(255,255,255,0.6)" }}>
-            Installed: <span style={styles.valueTag}>v{updateInfo?.current_version ?? "1.3.3"}</span>
+          <div style={{ fontSize: "12px", color: DIM_COLOR }}>
+            Installed:{" "}
+            <span style={styles.valueTag}>v{updateInfo?.current_version ?? version ?? "?"}</span>
             {updateInfo?.latest_version && !updateInfo.error && (
-              <span> &nbsp; Latest: <span style={styles.valueTag}>v{updateInfo.latest_version}</span></span>
+              <span>
+                {" "}
+                Latest: <span style={styles.valueTag}>v{updateInfo.latest_version}</span>
+              </span>
             )}
           </div>
         </PanelSectionRow>
         {updateInfo?.error && (
           <PanelSectionRow>
-            <div style={{ ...styles.warningBox, color: "#f87171", borderColor: "rgba(248,113,113,0.4)", background: "rgba(248,113,113,0.1)" }}>
-              {updateInfo.error}
-            </div>
+            <div style={styles.errorBox}>{updateInfo.error}</div>
           </PanelSectionRow>
         )}
         {updateInfo && !updateInfo.error && !updateInfo.update_available && !downloadPath && (
           <PanelSectionRow>
-            <div style={{ fontSize: "12px", color: "#4ade80" }}>Up to date</div>
+            <div style={{ fontSize: "12px", color: OK_COLOR }}>Up to date</div>
           </PanelSectionRow>
         )}
         {updateInfo?.update_available && !downloadPath && (
@@ -594,10 +727,15 @@ const LGoVibeControl = () => {
         )}
         {downloadPath && (
           <PanelSectionRow>
-            <div style={styles.warningBox}>
-              Downloaded to <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>{downloadPath}</span>
-              <br /><br />
-              To install: Decky → Developer → Uninstall LeGo Vibe Control → Install Plugin from ZIP → select the file.
+            <div style={styles.infoBox}>
+              Downloaded to{" "}
+              <span style={{ fontFamily: "monospace", wordBreak: "break-all" }}>
+                {downloadPath}
+              </span>
+              <br />
+              <br />
+              To install: Decky - Developer - Uninstall LeGo Vibe Control - Install Plugin from ZIP
+              - select the file.
             </div>
           </PanelSectionRow>
         )}
@@ -610,11 +748,11 @@ const LGoVibeControl = () => {
 
       <PanelSection title="Notes">
         <PanelSectionRow>
-          <div style={styles.warningBox}>
-            Intensity levels: Off → Low → Medium → High. Mode selects vibration pattern:
-            FPS, Racing, Standard, SPG, RPG — applied globally to both handles.
-            Settings persist across reboots.
-            Per-game profiles auto-apply when a game with a saved profile starts.
+          <div style={styles.infoBox}>
+            Intensity levels: Off, Low, Medium, High. Mode selects the vibration pattern, applied to
+            both handles. Settings persist across reboots and are re-applied after sleep or a
+            controller reconnect. Per-game profiles auto-apply when a game with a saved profile
+            starts.
           </div>
         </PanelSectionRow>
       </PanelSection>
@@ -622,45 +760,30 @@ const LGoVibeControl = () => {
   );
 };
 
-// ------------------------------------------------------------------ //
-// Plugin entry point
-// ------------------------------------------------------------------ //
-
-let _prevHWSettings: VibeSettings | null = null;
+// ── Plugin entry point ────────────────────────────────────────────────────────
 
 export default definePlugin(() => {
-  RunningApps.register();
-  let active = true;
-
-  SettingsManager.init().then(() => {
-    if (!active) return;
-    _prevHWSettings = SettingsManager.current();
-
-    RunningApps.listen(async () => {
-      const prev = _prevHWSettings;
-      const next = SettingsManager.current();
-      try {
-        await SettingsManager.applyToHW(prev);
-        _prevHWSettings = next;
-      } finally {
-        SettingsManager.notify();
-      }
-    });
-  });
+  // Started unconditionally: the old code registered the game listener inside
+  // an init().then(), so a single failed load disabled per-game profiles for
+  // the rest of the session.
+  AppWatcher.start();
 
   return {
     name: "LeGo Vibe Control",
-    titleView: <span>LeGo Vibe Control</span>,
+    titleView: <div className={staticClasses.Title}>LeGo Vibe Control</div>,
     content: <LGoVibeControl />,
     icon: (
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"
-        style={{ width: "1em", height: "1em" }}>
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        fill="currentColor"
+        style={{ width: "1em", height: "1em" }}
+      >
         <path d="M0 15h2V9H0v6zm3 2h2V7H3v10zm19-8v6h2V9h-2zm-3 8h2V7h-2v10zm-7-1c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm0-8c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z" />
       </svg>
     ),
     onDismount() {
-      active = false;
-      RunningApps.unregister();
+      AppWatcher.stop();
     },
   };
 });
