@@ -1,1 +1,7 @@
-pyudev
+# Intentionally empty.
+#
+# This plugin has no pip dependencies. pyudev is vendored in ./pyudev so the
+# plugin works on SteamOS images that do not ship it, and listing it here as
+# well used to imply an install step that never runs. See NOTICE for its
+# license. If pyudev cannot be imported the plugin falls back to a sysfs
+# glob scan and only loses udev hotplug detection.

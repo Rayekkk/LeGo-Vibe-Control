@@ -1,0 +1,33 @@
+LeGo Vibe Control
+Copyright (c) 2026 Rayekkk
+
+This product is licensed under the MIT License. See LICENSE for the full text.
+
+================================================================================
+Third-party components distributed with this plugin
+================================================================================
+
+pyudev (the `pyudev/` directory)
+--------------------------------
+Version 0.24.4
+Copyright (C) 2010-2015 Sebastian Wiesner and contributors
+Homepage: https://github.com/pyudev/pyudev
+
+pyudev is licensed under the GNU Lesser General Public License, version 2.1
+or (at your option) any later version. It is bundled here unmodified, as a
+separate and unlinked Python package, so that the plugin can enumerate HID
+devices on SteamOS installs that do not ship it.
+
+A copy of the LGPL-2.1 license text is included in the header of every
+bundled pyudev source file. The full text is also available at:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+Because pyudev is used as an unmodified, dynamically imported library and is
+redistributed in its original source form, the plugin's own source remains
+under the MIT License. Anyone redistributing this plugin must keep this
+notice and the pyudev license headers intact, and may replace the bundled
+pyudev with their own copy.
+
+The plugin degrades gracefully to a sysfs glob scan when pyudev cannot be
+imported, so removing the bundled copy does not break core functionality -
+only udev hotplug detection is lost.
