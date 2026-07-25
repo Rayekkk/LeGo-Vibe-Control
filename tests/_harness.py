@@ -88,7 +88,7 @@ _settings_mod = types.ModuleType("settings")
 _settings_mod.SettingsManager = SettingsManager
 sys.modules["settings"] = _settings_mod
 
-# main.py and updater.py target Linux and import these at module scope. Stubbing
+# main.py and lego_updater.py target Linux and import these at module scope. Stubbing
 # them when absent lets the hardware-independent tests run on a Windows dev box
 # too; nothing in test_logic.py touches either, and test_device.py skips itself.
 for _unix_only in ("fcntl", "pwd"):
@@ -103,7 +103,7 @@ for _unix_only in ("fcntl", "pwd"):
 
 sys.path.insert(0, PLUGIN_DIR)
 import main  # noqa: E402
-import updater  # noqa: E402
+import lego_updater as updater  # noqa: E402
 
 
 def seed(blob: dict) -> None:

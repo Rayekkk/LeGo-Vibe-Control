@@ -1,5 +1,6 @@
 """Backend tests that need no Legion Go attached. These run in CI."""
 import asyncio
+import glob
 import json
 import os
 import ssl
@@ -191,6 +192,45 @@ class UpdateUrlValidation(unittest.TestCase):
     def test_accepts_known_github_hosts(self):
         for host in updater.ALLOWED_HOSTS:
             self.assertTrue(updater.checked_url(f"https://{host}/a.zip"))
+
+
+class ShippedModuleNames(unittest.TestCase):
+    """Before a plugin is imported, the loader aliases every one of its own
+    submodules to a bare name:
+
+        for key in [k for k in sys.modules if k.startswith("decky_loader.")]:
+            sys.modules[key.replace("decky_loader.", "")] = sys.modules[key]
+
+    `import x` consults sys.modules before sys.path, so a plugin file named
+    after one of them never loads at all - the import silently hands back the
+    loader's module instead. That is exactly how a shared `updater.py` shipped
+    and killed both plugins on startup with a TypeError from the wrong Updater.
+    """
+
+    RESERVED = frozenset({
+        "browser", "enums", "helpers", "injector", "loader",
+        "main", "settings", "updater", "utilities", "wsrouter",
+    })
+
+    def test_no_shipped_module_is_shadowed_by_the_loader(self):
+        shipped = {
+            os.path.splitext(os.path.basename(path))[0]
+            for path in glob.glob(os.path.join(main.PLUGIN_DIR, "*.py"))
+        }
+        # main.py is the one exemption: the loader loads it from an explicit
+        # file location rather than by module name.
+        self.assertEqual(sorted((shipped & self.RESERVED) - {"main"}), [])
+
+    def test_the_packaged_payload_matches_what_we_import(self):
+        # The zip is what reaches the device, so a rename that misses
+        # scripts/package.mjs ships a plugin with no updater module at all.
+        script = os.path.join(main.PLUGIN_DIR, "scripts", "package.mjs")
+        if not os.path.isfile(script):
+            self.skipTest("repo-only check; the deployed plugin ships no scripts/")
+        with open(script) as handle:
+            packaged = handle.read()
+        self.assertIn('"lego_updater.py"', packaged)
+        self.assertNotIn('"updater.py"', packaged)
 
 
 class Versions(unittest.TestCase):
