@@ -60,6 +60,12 @@ RUMBLE_MODES = ["fps", "racing", "standard", "spg", "rpg"]
 
 DEFAULT_APP = "0"
 
+# How long reapply() keeps looking for the controller after a resume. The
+# notification fires the moment the system wakes, several seconds before USB has
+# finished re-enumerating.
+_REAPPLY_WAIT_S = 12.0
+_REAPPLY_STEP_S = 0.5
+
 # Profile field names. These match the shape the frontend has always
 # persisted, so existing settings.json files migrate without translation.
 PKEY_LEVEL  = "level"
@@ -768,14 +774,29 @@ class Plugin:
         Driven from the frontend, off Steam's own resume notification: Decky has
         no backend resume hook, the loader only ever invokes _migration, _main,
         _unload and _uninstall.
+
+        Retried, because that notification arrives before USB has finished
+        coming back. Measured on the device: resume at 20:04:19, the controller
+        re-appeared at 20:04:23 under a new sysfs path. A single attempt at t+0
+        found no device and reported a failure that was really "not back yet" -
+        and if the controller had not re-enumerated at all, the hotplug monitor
+        would have had nothing to catch either.
         """
+        deadline = time.monotonic() + _REAPPLY_WAIT_S
+
         def _do() -> dict:
             _forget_device()
             values = _active_values()
-            ok = _apply_settings(values, force=True)
-            decky.logger.info(f"[lego-vibe] reapply: success={ok} values={values}")
-            return {"success": ok, "settings": values}
-        return await _offload(_do)
+            return {"success": _apply_settings(values, force=True), "settings": values}
+
+        while True:
+            result = await _offload(_do)
+            if result["success"] or time.monotonic() >= deadline:
+                decky.logger.info(
+                    f"[lego-vibe] reapply: success={result['success']} "
+                    f"values={result['settings']}")
+                return result
+            await asyncio.sleep(_REAPPLY_STEP_S)
 
     # ---- Per-game profiles ------------------------------------------ #
 

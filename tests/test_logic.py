@@ -267,6 +267,48 @@ class Versions(unittest.TestCase):
         self.assertEqual(plugin_json, package_json)
 
 
+class ReapplyAfterResume(unittest.IsolatedAsyncioTestCase):
+    """The resume notification fires the moment the system wakes, several
+    seconds before USB has finished re-enumerating. Measured on the device:
+    resume at 20:04:19, controller back at 20:04:23 under a new sysfs path."""
+
+    def setUp(self):
+        seed(FIXTURE)
+        self._apply, self._forget = main._apply_settings, main._forget_device
+        self._wait, self._step = main._REAPPLY_WAIT_S, main._REAPPLY_STEP_S
+        main._forget_device = lambda: None
+        main._REAPPLY_STEP_S = 0.01
+        self.addCleanup(setattr, main, "_apply_settings", self._apply)
+        self.addCleanup(setattr, main, "_forget_device", self._forget)
+        self.addCleanup(setattr, main, "_REAPPLY_WAIT_S", self._wait)
+        self.addCleanup(setattr, main, "_REAPPLY_STEP_S", self._step)
+        self.attempts = 0
+
+    def _absent_until(self, n):
+        def apply(values, sys_path=None, force=False):
+            self.attempts += 1
+            return self.attempts > n
+        main._apply_settings = apply
+
+    async def test_it_waits_for_the_controller_to_come_back(self):
+        main._REAPPLY_WAIT_S = 5.0
+        self._absent_until(3)
+        result = await main.Plugin().reapply()
+        self.assertTrue(result["success"])
+        self.assertEqual(self.attempts, 4)
+
+    async def test_a_device_already_present_is_applied_once(self):
+        self._absent_until(0)
+        self.assertTrue((await main.Plugin().reapply())["success"])
+        self.assertEqual(self.attempts, 1, "no reason to retry a success")
+
+    async def test_it_gives_up_rather_than_looping_forever(self):
+        # A controller that never comes back must not leave a task spinning.
+        main._REAPPLY_WAIT_S = 0.05
+        self._absent_until(10_000)
+        self.assertFalse((await main.Plugin().reapply())["success"])
+
+
 class DeviceEvents(unittest.IsolatedAsyncioTestCase):
     """Hotplug happens with the Quick Access Menu shut more often than not, so
     the backend pushes the new state instead of waiting to be asked."""
