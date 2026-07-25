@@ -44,6 +44,11 @@ class ProfileCoercion(unittest.TestCase):
         self.assertEqual(main._coerce_profile({"level": "3"})[main.PKEY_LEVEL], 3)
 
 
+def _explode() -> None:
+    """Stand-in for a store that cannot be read or committed."""
+    raise OSError("disk on fire")
+
+
 class Migration(unittest.TestCase):
     def test_legacy_flat_keys_become_the_global_profile(self):
         seed({"intensity_level": 3, "rumble_mode": 2,
@@ -78,6 +83,15 @@ class Migration(unittest.TestCase):
         main._migrate()
         self.assertEqual(main._active_values(), main.DEFAULT_PROFILE)
 
+    def test_a_junk_schema_version_does_not_raise(self):
+        # This runs from _migration(), where a raise kills the plugin before its
+        # RPC socket exists - so a hand-edited store must not be able to do it.
+        for junk in ("nonsense", None, [], {"a": 1}):
+            with self.subTest(schema=junk):
+                seed({"schema_version": junk, "intensity_level": 3})
+                main._migrate()
+                self.assertEqual(main._active_values()["level"], 3)
+
     def test_the_lifecycle_hook_runs_the_migration(self):
         # Decky runs _migration() to completion before it even schedules _main(),
         # which is the guarantee we want: no profile read can outrun it.
@@ -85,6 +99,33 @@ class Migration(unittest.TestCase):
               "touchpad_intensity": 1, "touchpad_enabled": False})
         asyncio.run(main.Plugin()._migration())
         self.assertEqual(main._active_values()["level"], 3)
+
+    def test_a_failed_migration_is_reported_not_raised(self):
+        # The loader wraps start-up in a bare except that logs and exits, and it
+        # never reaches setup_server() - so a raise here would strand the panel
+        # retrying an is_ready() with nobody left to answer it.
+        original, main._migrate = main._migrate, _explode
+        try:
+            asyncio.run(main.Plugin()._migration())
+        finally:
+            main._migrate = original
+            self.addCleanup(setattr, main.Plugin, "_setup_error", None)
+        self.assertIn("disk on fire", main.Plugin._setup_error or "")
+
+    def test_a_recorded_migration_failure_survives_main(self):
+        # _main() used to clear _setup_error on success, which would have wiped
+        # exactly the message the user needs to see.
+        main.Plugin._setup_error = "settings migration failed: disk on fire"
+        self.addCleanup(setattr, main.Plugin, "_setup_error", None)
+        original, main._apply_settings = main._apply_settings, lambda *a, **k: True
+        try:
+            asyncio.run(main.Plugin()._main())
+        finally:
+            main._apply_settings = original
+            if main._monitor_task:
+                main._monitor_task.cancel()
+                main._monitor_task = None
+        self.assertIn("disk on fire", main.Plugin._setup_error or "")
 
 
 class ProfileResolution(unittest.TestCase):
@@ -194,25 +235,29 @@ class DeviceEvents(unittest.IsolatedAsyncioTestCase):
         seed(FIXTURE)
         emitted.clear()
 
-    async def test_both_halves_of_the_panel_are_pushed(self):
-        await main._emit_device_state()
-        self.assertEqual([name for name, _ in emitted], ["device", "settings"])
+    async def test_only_the_driver_status_is_pushed(self):
+        # Deliberately not the settings. A hotplug re-applies the stored profile
+        # without changing it, so that payload would tell the panel what it
+        # already knows - and adopting one bumps the panel's edit counter, which
+        # made it discard the reply to an edit the user was making at the time.
+        await main._emit_device_status()
+        self.assertEqual([name for name, _ in emitted], ["device"])
 
     async def test_the_status_payload_matches_the_rpc(self):
         # The panel adopts either interchangeably, so the two have to agree.
-        await main._emit_device_state()
+        await main._emit_device_status()
         self.assertEqual(dict(emitted)["device"][0],
                          await main.Plugin().get_driver_status())
 
-    async def test_the_settings_payload_carries_the_resolved_profile(self):
-        main._active_app_id = GAME_WITH_OVERRIDE
+    async def test_a_broken_push_does_not_escape(self):
+        # Raised inside the hotplug handler this would kill the monitor task,
+        # and with it every later reconnect.
+        original, main._device_status = main._device_status, _explode
         try:
-            await main._emit_device_state()
-            payload = dict(emitted)["settings"][0]
-            self.assertEqual(payload["settings"], main._active_values())
-            self.assertEqual(payload["profile_id"], GAME_WITH_OVERRIDE)
+            await main._emit_device_status()
         finally:
-            main._active_app_id = main.DEFAULT_APP
+            main._device_status = original
+        self.assertEqual(emitted, [])
 
 
 class DeviceIdParsing(unittest.TestCase):

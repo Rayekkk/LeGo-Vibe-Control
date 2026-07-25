@@ -439,20 +439,20 @@ const LGoVibeControl = () => {
     return () => { active = false; };
   }, [adoptResponse]);
 
-  // Hotplug pushes both of these from the backend, so the dot and the sliders
-  // stay right even while the panel is shut. Registered unconditionally: a
-  // controller is plugged in with the Quick Access Menu closed far more often
-  // than with it open, and adopting the state on arrival beats discovering it
-  // on the next open.
+  // Hotplug pushes the driver status from the backend, so the dot is right even
+  // while the panel is shut. Registered unconditionally: a controller is plugged
+  // in with the Quick Access Menu closed far more often than with it open, and
+  // adopting the state on arrival beats discovering it on the next open.
+  //
+  // Only the status. A hotplug re-applies the stored profile without changing
+  // it, so a settings payload would carry nothing new - and feeding one to
+  // adoptResponse bumps editSeq, which would make the panel throw away the
+  // reply to an edit the user was making at that moment.
   useEffect(() => {
     const onDevice = (status: DriverStatus) => setDriver(status);
     addEventListener<[DriverStatus]>("device", onDevice);
-    addEventListener<[SettingsResponse]>("settings", adoptResponse);
-    return () => {
-      removeEventListener<[DriverStatus]>("device", onDevice);
-      removeEventListener<[SettingsResponse]>("settings", adoptResponse);
-    };
-  }, [adoptResponse]);
+    return () => removeEventListener<[DriverStatus]>("device", onDevice);
+  }, []);
 
   // Still re-checked on open, as the backstop for the cases no event covers:
   // without pyudev there is no hotplug monitor at all, and a plugin reload

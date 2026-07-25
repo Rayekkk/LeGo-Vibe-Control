@@ -360,7 +360,14 @@ def _migrate() -> None:
     """Fold the old flat settings keys into profile '0' exactly once."""
     with _settings_lock:
         settings.read()
-        if int(settings.getSetting(SETTINGS_KEY_SCHEMA, 1)) >= CURRENT_SCHEMA:
+        # A hand-edited or truncated store can hold anything here, and this runs
+        # from _migration() - where a raise kills the plugin before its RPC
+        # socket exists. Same guard as LeGoTDP's copy.
+        try:
+            schema = int(settings.getSetting(SETTINGS_KEY_SCHEMA, 1))
+        except (TypeError, ValueError):
+            schema = 1
+        if schema >= CURRENT_SCHEMA:
             return
         profiles = settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {}) or {}
         if not isinstance(profiles, dict):
@@ -406,23 +413,24 @@ def _device_status() -> dict:
     }
 
 
-async def _emit_device_state() -> None:
-    """Push the driver status and the live profile to the panel.
+async def _emit_device_status() -> None:
+    """Push the driver status to the panel.
 
     A controller is plugged, unplugged or re-bound with the Quick Access Menu
     shut far more often than with it open. Before this the panel kept showing
     whatever it happened to see the last time it was opened, so the status dot
     could sit on red with the device working perfectly.
-    """
-    def _do() -> tuple[dict, dict]:
-        return _device_status(), _settings_payload()
 
+    Only the status goes out. Hotplug re-applies the stored profile without
+    changing it, so a settings payload would be telling the panel what it
+    already knows - and adopting one bumps the panel's edit counter, which can
+    make it discard the reply to an edit the user made in the meantime and
+    leave a slider showing a value the hardware no longer has.
+    """
     try:
-        status, payload = await _offload(_do)
-        await decky.emit("device", status)
-        await decky.emit("settings", payload)
+        await decky.emit("device", await _offload(_device_status))
     except Exception as exc:
-        decky.logger.warning(f"[lego-vibe] could not emit device state: {exc}")
+        decky.logger.warning(f"[lego-vibe] could not emit device status: {exc}")
 
 
 def _update_active(field: str, value) -> dict:
@@ -548,7 +556,7 @@ async def _monitor_hotplug() -> None:
                 else:
                     decky.logger.info("[lego-vibe] device disconnected")
                     _forget_device()
-                    await _emit_device_state()
+                    await _emit_device_status()
     except asyncio.CancelledError:
         pass
     finally:
@@ -589,7 +597,7 @@ async def _handle_device_added(sys_path: str, action: str) -> None:
 
     ok = await asyncio.get_running_loop().run_in_executor(None, _apply)
     decky.logger.info(f"[lego-vibe] re-applied profile after '{action}': success={ok}")
-    await _emit_device_state()
+    await _emit_device_status()
 
 
 # ── Plugin class ───────────────────────────────────────────────────────────────
@@ -610,8 +618,19 @@ class Plugin:
         decky.migrate_settings() does not fit here - it relocates files as they
         are, whereas this rewrites keys inside a file that is already in the
         right place.
+
+        Nothing may escape. The loader runs this with run_until_complete inside
+        a bare except that logs and sys.exit(0)s, and it never gets as far as
+        creating the RPC socket - so a raise here would leave the panel retrying
+        an is_ready() that has nobody to answer it, spinning on "Initializing"
+        forever. Recording the failure instead tells the user their old settings
+        did not come across, before they start rebuilding them on top.
         """
-        await _offload(_migrate)
+        try:
+            await _offload(_migrate)
+        except Exception as exc:
+            Plugin._setup_error = f"settings migration failed: {exc}"
+            decky.logger.error(f"[lego-vibe] migration failed: {exc}")
 
     async def _main(self):
         global _monitor_task
@@ -627,7 +646,9 @@ class Plugin:
                 updater.ssl_context()
             await _offload(_start)
             _monitor_task = asyncio.create_task(_monitor_hotplug())
-            Plugin._setup_error = None
+            # Deliberately not cleared on success: _migration() runs first and
+            # may have recorded a failure here, and that is precisely what the
+            # panel needs to show. The attribute already starts out None.
         except Exception as exc:
             Plugin._setup_error = str(exc)
             decky.logger.error(f"[lego-vibe] setup failed: {exc}")
