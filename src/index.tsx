@@ -238,11 +238,15 @@ class AppWatcher {
     if (id === this.currentId) return;
     this.busy = true;
     try {
-      this.currentId = id;
       const res = await setActiveApp(id);
+      // Committed only once the backend has it. Recording the id before the
+      // call meant a single failed RPC - the loader restarting, say - left
+      // every later tick thinking there was nothing to send, so the hardware
+      // kept the previous game's profile for the rest of the session.
+      this.currentId = id;
       this.listeners.forEach((fn) => fn(res));
     } catch (e) {
-      console.error("[lego-vibe] setActiveApp failed", e);
+      console.error("[lego-vibe] setActiveApp failed, will retry", e);
     } finally {
       this.busy = false;
     }
@@ -366,7 +370,15 @@ const LGoVibeControl = () => {
     [],
   );
 
+  // Bumped by every optimistic edit. A reply may only overwrite the UI while it
+  // is still the newest thing that happened, otherwise a slow sysfs write snaps
+  // the slider back to a value the user has already moved off.
+  const editSeq = useRef(0);
+
   const adoptResponse = useCallback((res: SettingsResponse) => {
+    // Counts as an edit: switching game replaces the whole profile, and a field
+    // reply still in flight from the previous one must not undo that.
+    editSeq.current += 1;
     setSettings(res.settings);
     setAppId(res.app_id);
     setPerGameOn(res.overwrite);
@@ -433,17 +445,22 @@ const LGoVibeControl = () => {
 
   const applyField = useCallback(
     async (key: string, optimistic: Partial<VibeSettings>, call: () => Promise<ApplyResponse>) => {
+      const seq = ++editSeq.current;
       setSettings((prev) => ({ ...prev, ...optimistic }));
       debounce(key, () => {
         setApplying(true);
         call()
           .then((res) => {
             checkResult("Could not apply setting", res);
-            if (res.settings) setSettings(res.settings);
+            if (res.settings && seq === editSeq.current) setSettings(res.settings);
           })
           .catch((e) => {
             notifyFailure("Could not apply setting", e);
-            void getSettings().then(adoptResponse).catch(() => undefined);
+            // Only resync when nothing newer is pending; the newer edit's own
+            // reply is the one that should decide what the panel shows.
+            if (seq === editSeq.current) {
+              void getSettings().then(adoptResponse).catch(() => undefined);
+            }
           })
           .finally(() => setApplying(false));
       });
