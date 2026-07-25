@@ -395,7 +395,7 @@ const LGoVibeControl = () => {
           return;
         }
         if (!state.ready) {
-          setTimeout(check, 1000);
+          if (active) setTimeout(check, 1000);
           return;
         }
         const [current, status, caps, ver] = await Promise.all([

@@ -1,4 +1,5 @@
 import decky
+import copy
 import os
 import re
 import sys
@@ -309,11 +310,14 @@ def _coerce_profile(raw: dict | None) -> dict:
 
 
 def _load_profiles() -> dict:
+    """A private copy of the profile store. Callers coerce and mutate what they
+    get back, and getSetting hands out a live reference into the manager's own
+    dict - so without the copy those edits would land in the store uncommitted,
+    and a later read() would silently drop them again."""
     with _settings_lock:
         settings.read()
         profiles = settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {}) or {}
-    if not isinstance(profiles, dict):
-        profiles = {}
+        profiles = copy.deepcopy(profiles) if isinstance(profiles, dict) else {}
     if DEFAULT_APP not in profiles:
         profiles[DEFAULT_APP] = {"overwrite": False, "settings": dict(DEFAULT_PROFILE)}
     return profiles

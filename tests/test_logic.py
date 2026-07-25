@@ -1,4 +1,5 @@
 """Backend tests that need no Legion Go attached. These run in CI."""
+import json
 import os
 import ssl
 import tempfile
@@ -95,6 +96,19 @@ class ProfileResolution(unittest.TestCase):
         main._active_app_id = "999999"
         self.assertEqual(main._active_values()["mode"], 1)
 
+    def test_an_unsaved_edit_never_reaches_the_disk(self):
+        # getSetting returns a live reference into the manager's own dict, and
+        # every caller here coerces and mutates what it gets back. Without a
+        # private copy any later commit flushes those uncommitted edits to disk
+        # along with whatever it was actually saving.
+        profiles = main._load_profiles()
+        profiles[GAME_WITH_OVERRIDE]["settings"]["level"] = 0
+        main.settings.setSetting("unrelated_key", True)
+        main.settings.commit()
+        with open(main.settings.path) as handle:
+            stored = json.load(handle)["game_profiles"][GAME_WITH_OVERRIDE]
+        self.assertEqual(stored["settings"]["level"], 3)
+
     def test_update_writes_to_the_resolved_profile(self):
         main._active_app_id = GAME_WITH_OVERRIDE
         main._update_active(main.PKEY_LEVEL, 1)
@@ -139,7 +153,6 @@ class Versions(unittest.TestCase):
         self.assertEqual(updater.version_tuple("nonsense"), ())
 
     def test_plugin_version_matches_the_manifest(self):
-        import json
         with open(os.path.join(main.PLUGIN_DIR, "plugin.json")) as handle:
             self.assertEqual(main.updater.plugin_version(), json.load(handle)["version"])
 
