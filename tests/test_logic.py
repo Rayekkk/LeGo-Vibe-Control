@@ -10,6 +10,7 @@ from _harness import (
     GAME_WITH_OVERRIDE,
     main,
     seed,
+    updater,
 )
 
 
@@ -109,38 +110,38 @@ class UpdateUrlValidation(unittest.TestCase):
 
     def test_rejects_plain_http(self):
         with self.assertRaises(ValueError):
-            main._checked_url("http://github.com/x.zip")
+            updater.checked_url("http://github.com/x.zip")
 
     def test_rejects_non_http_schemes(self):
         for url in ("file:///etc/passwd", "ftp://github.com/x.zip"):
             with self.assertRaises(ValueError):
-                main._checked_url(url)
+                updater.checked_url(url)
 
     def test_rejects_foreign_hosts(self):
         for url in ("https://evil.example.com/x.zip",
                     "https://github.com.evil.example.com/x.zip"):
             with self.assertRaises(ValueError):
-                main._checked_url(url)
+                updater.checked_url(url)
 
     def test_accepts_known_github_hosts(self):
-        for host in main._ALLOWED_UPDATE_HOSTS:
-            self.assertTrue(main._checked_url(f"https://{host}/a.zip"))
+        for host in updater.ALLOWED_HOSTS:
+            self.assertTrue(updater.checked_url(f"https://{host}/a.zip"))
 
 
 class Versions(unittest.TestCase):
     def test_ordering(self):
-        self.assertGreater(main._version_tuple("1.4.0"), main._version_tuple("1.3.3"))
-        self.assertGreater(main._version_tuple("1.10.0"), main._version_tuple("1.9.0"))
-        self.assertEqual(main._version_tuple("1.4.0"), main._version_tuple("1.4.0"))
+        self.assertGreater(updater.version_tuple("1.5.0"), updater.version_tuple("1.4.9"))
+        self.assertGreater(updater.version_tuple("1.10.0"), updater.version_tuple("1.9.0"))
+        self.assertEqual(updater.version_tuple("1.5.0"), updater.version_tuple("1.5.0"))
 
     def test_non_numeric_tags_do_not_raise(self):
-        self.assertEqual(main._version_tuple("v1.4.0-beta"), (1, 4, 0))
-        self.assertEqual(main._version_tuple("nonsense"), ())
+        self.assertEqual(updater.version_tuple("v1.5.0-beta"), (1, 5, 0))
+        self.assertEqual(updater.version_tuple("nonsense"), ())
 
     def test_plugin_version_matches_the_manifest(self):
         import json
-        with open(os.path.join(main._plugin_dir, "plugin.json")) as handle:
-            self.assertEqual(main._plugin_version(), json.load(handle)["version"])
+        with open(os.path.join(main.PLUGIN_DIR, "plugin.json")) as handle:
+            self.assertEqual(main.updater.plugin_version(), json.load(handle)["version"])
 
 
 class DeviceIdParsing(unittest.TestCase):
@@ -188,22 +189,59 @@ class DownloadDirectory(unittest.TestCase):
                 handle.write('XDG_DOWNLOAD_DIR="$HOME/Pobrane"\n')
             # The value is substituted verbatim, so the separator is the one
             # from the config file rather than the host's.
-            self.assertEqual(main._xdg_download_dir(home), f"{home}/Pobrane")
+            self.assertEqual(updater.xdg_download_dir(home), f"{home}/Pobrane")
 
     def test_falls_back_to_downloads(self):
         with tempfile.TemporaryDirectory() as home:
-            self.assertEqual(main._xdg_download_dir(home),
+            self.assertEqual(updater.xdg_download_dir(home),
                              os.path.join(home, "Downloads"))
 
 
 class TlsContext(unittest.TestCase):
     def test_verification_stays_enabled_with_a_populated_store(self):
-        context = main._ssl_context()
+        context = main.updater.ssl_context()
         self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(context.check_hostname)
         # An empty store is the frozen-loader failure mode the fallback exists
         # to cover; if it is still empty here, nothing would ever verify.
         self.assertGreater(context.cert_store_stats()["x509_ca"], 0)
+
+
+class DownloadCeiling(unittest.TestCase):
+    """A truncated or endless download must not fill the device's disk."""
+
+    class _Response:
+        def __init__(self, total):
+            self.remaining = total
+
+        def read(self, size):
+            chunk = b"x" * min(size, self.remaining)
+            self.remaining -= len(chunk)
+            return chunk
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _updater_returning(self, total):
+        u = updater.Updater(releases_url="https://api.github.com/x",
+                            user_agent="test", log_prefix="[test]",
+                            plugin_dir=main.PLUGIN_DIR, logger=main.decky.logger)
+        u.open_url = lambda url, timeout: self._Response(total)
+        return u
+
+    def test_a_small_download_reports_its_size(self):
+        u = self._updater_returning(1024)
+        with tempfile.TemporaryFile() as out:
+            self.assertEqual(u.download_to("https://github.com/a.zip", out, 10), 1024)
+
+    def test_an_oversized_download_is_aborted(self):
+        u = self._updater_returning(updater.MAX_DOWNLOAD_BYTES + 1)
+        with tempfile.TemporaryFile() as out:
+            with self.assertRaises(ValueError):
+                u.download_to("https://github.com/a.zip", out, 10)
 
 
 if __name__ == "__main__":

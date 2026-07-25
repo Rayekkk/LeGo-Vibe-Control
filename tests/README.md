@@ -21,7 +21,7 @@ or written.
 Copy the repo across and run it there:
 
 ```bash
-scp -r main.py plugin.json pyudev tests deck@<legion>:/tmp/lego-vibe-tests/
+scp -r main.py updater.py plugin.json pyudev tests deck@<legion>:/tmp/lego-vibe-tests/
 ssh deck@<legion> 'cd /tmp/lego-vibe-tests && sudo python3 -m unittest discover -s tests -v'
 ```
 
