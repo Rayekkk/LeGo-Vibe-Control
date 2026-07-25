@@ -53,3 +53,78 @@ Settings from earlier versions are migrated automatically, including any per-gam
 - Per-game values no longer leak into your global profile. Rebooting while a game was running used to promote that game's settings to the new global default.
 - Errors are shown instead of being swallowed. Failed changes, failed tests and failed update checks surface as notifications.
 - Update downloads are verified again. Certificate checking had been disabled entirely; it now works properly, and downloads are restricted to GitHub, size-limited, and left owned by you rather than by root.
+
+## [1.3.3] - 2026-05-23
+
+### Fixed
+
+- Update downloads respect the system language. The ZIP is saved to your actual XDG download directory - `Scaricati`, `Téléchargements` and so on - instead of a hardcoded `Downloads` folder.
+
+## [1.3.2] - 2026-05-21
+
+### Fixed
+
+- The plugin failed to load after a fresh install. `package.json` is now included in the release ZIP; without it Decky Loader fell back to legacy script loading, which is incompatible with the ES module bundle, and showed a syntax error instead of the UI.
+
+## [1.3.1] - 2026-05-20
+
+### Added
+
+- The per-game toggle shows the game name and the active profile tag (`MODE | LEVEL`) in green when the profile is enabled, matching the LeGoTDP style.
+
+### Fixed
+
+- No more spurious vibration. The plugin no longer triggers haptic pulses on load or on game launch and exit when the settings have not changed; an in-memory write cache skips sysfs writes that would produce duplicate driver pulses.
+
+## [1.3.0] - 2026-05-18
+
+### Added
+
+- Per-game vibration profiles. Save separate intensity and mode settings per Steam game; the profile is applied automatically when the game launches.
+- In-plugin update system. Check for updates and download the new version directly from the plugin menu; the downloaded ZIP is saved to `~/Downloads`, with install instructions shown in the UI.
+
+## [1.2.0] - 2026-05-14
+
+### Added
+
+- Touchpad vibration control. An independent toggle and intensity slider for the touchpad haptic motor; changing the controller intensity no longer affects the touchpad.
+
+### Changed
+
+- Reset to defaults now resets all settings, including touchpad intensity (Medium) and touchpad enabled (on).
+- The log prefix is `lego-vibe`, renamed from `lgo2-vibe`.
+
+### Removed
+
+- The left and right controller toggles. They only affected notification-type haptics rather than game force-feedback, which made them misleading.
+
+### Fixed
+
+- `rumble_notification` is reset on startup. Both handles are explicitly set to `true` at startup and on hotplug, clearing stale state left behind by the per-handle toggles in 1.1.0.
+
+## [1.1.0] - 2026-05-13
+
+### Added
+
+- Vibration mode slider, with five patterns - FPS, Racing, Standard, SPG and RPG - applied globally to both handles.
+- Driver-agnostic discovery: pyudev with two glob fallbacks, and no hardcoded driver path.
+- Bundled pyudev 0.24.4, so the plugin works without pip or network access and is safe to sideload as a ZIP.
+- A discovery method label, showing how the sysfs path was found - pyudev, glob-hid or glob-module.
+
+### Fixed
+
+- The interface no longer hangs indefinitely if the Python backend crashes on startup; initialisation times out after five seconds.
+- Corrected the `global _discovery_method` declaration in the hotplug monitor.
+
+## [1.0.0] - 2026-05-12
+
+Initial release. Fork of [ally-vibe-control](https://github.com/piyush-tyagi-13/ally-vibe-control) by piyush-tyagi-13, ported to Lenovo Legion Go 2 hardware. Requires SteamOS 3.8 or newer for the `hid-lenovo-go` kernel driver, plus [Decky Loader](https://decky.xyz).
+
+### Added
+
+- Four vibration intensity levels: Off, Low, Medium and High.
+- Per-handle toggles, enabling or disabling rumble on the left and right controller independently.
+- Settings persist across reboots.
+- Test vibration button, to feel the current setting.
+- Driver status indicator, showing the active sysfs path.
+- Reset to default (Medium) in one tap.
