@@ -262,6 +262,17 @@ def _write_attr(sys_path: str, rel_path: str, value: str, force: bool = False) -
         return False
 
 
+async def _offload(fn, *args):
+    """Run blocking work off the event loop.
+
+    Sysfs writes, settings I/O and waiting on _apply_lock all block. Decky runs
+    every plugin on one shared event loop, so a handler that blocks here stalls
+    the whole loader - and _apply_lock can be held by the hotplug worker for as
+    long as five sysfs writes take.
+    """
+    return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+
+
 def _apply_settings(values: dict, sys_path: str | None = None,
                     force: bool = False) -> bool:
     """Write a full profile to the hardware. Every attribute is attempted."""
@@ -364,6 +375,18 @@ def _migrate() -> None:
         settings.setSetting(SETTINGS_KEY_GAME_PROFILES, profiles)
         settings.setSetting(SETTINGS_KEY_SCHEMA, CURRENT_SCHEMA)
         settings.commit()
+
+
+def _settings_payload() -> dict:
+    """What get_settings() reports: the resolved profile plus which one it is."""
+    profiles = _load_profiles()
+    app_id = _resolve_app_id(profiles)
+    return {
+        "settings":   _active_values(profiles),
+        "app_id":     _active_app_id,
+        "profile_id": app_id,
+        "overwrite":  app_id != DEFAULT_APP,
+    }
 
 
 def _update_active(field: str, value) -> dict:
@@ -544,13 +567,15 @@ class Plugin:
         decky.logger.info(
             f"[lego-vibe] startup  v{updater.plugin_version()}  pyudev={_PYUDEV}")
         try:
-            _migrate()
-            values = _active_values()
-            decky.logger.info(f"[lego-vibe] applying global profile: {values}")
-            _apply_settings(values, force=True)
-            # Resolve the trust store now so the log shows up front whether
-            # update checks will be able to verify certificates.
-            updater.ssl_context()
+            def _start() -> None:
+                _migrate()
+                values = _active_values()
+                decky.logger.info(f"[lego-vibe] applying global profile: {values}")
+                _apply_settings(values, force=True)
+                # Resolve the trust store now so the log shows up front whether
+                # update checks will be able to verify certificates.
+                updater.ssl_context()
+            await _offload(_start)
             _monitor_task = asyncio.create_task(_monitor_hotplug())
             Plugin._setup_error = None
         except Exception as exc:
@@ -587,22 +612,16 @@ class Plugin:
         return {"version": updater.plugin_version()}
 
     async def get_capabilities(self) -> dict:
-        p = _get_device_path()
-        caps = _capabilities(p) if p else {
-            "intensity": LEVEL_NAMES, "mode": RUMBLE_MODES, "tp_intensity": LEVEL_NAMES,
-        }
-        return caps
+        def _do() -> dict:
+            p = _get_device_path()
+            return _capabilities(p) if p else {
+                "intensity": LEVEL_NAMES, "mode": RUMBLE_MODES, "tp_intensity": LEVEL_NAMES,
+            }
+        return await _offload(_do)
 
     async def get_settings(self) -> dict:
         """Resolved settings for whichever profile is currently in effect."""
-        profiles = _load_profiles()
-        app_id = _resolve_app_id(profiles)
-        return {
-            "settings":   _active_values(profiles),
-            "app_id":     _active_app_id,
-            "profile_id": app_id,
-            "overwrite":  app_id != DEFAULT_APP,
-        }
+        return await _offload(_settings_payload)
 
     async def set_active_app(self, app_id: str) -> dict:
         """
@@ -613,17 +632,21 @@ class Plugin:
         app_id = str(app_id or DEFAULT_APP)
         decky.logger.info(f"[lego-vibe] frontend reports running app '{app_id}'")
         if app_id == _active_app_id:
-            return {"success": True, "changed": False, **(await self.get_settings())}
+            return {"success": True, "changed": False, **(await _offload(_settings_payload))}
         _active_app_id = app_id
-        values = _active_values()
-        decky.logger.info(f"[lego-vibe] active app -> {app_id}, applying {values}")
-        ok = _apply_settings(values)
-        return {"success": ok, "changed": True, **(await self.get_settings())}
+
+        def _do() -> dict:
+            values = _active_values()
+            decky.logger.info(f"[lego-vibe] active app -> {app_id}, applying {values}")
+            ok = _apply_settings(values)
+            return {"success": ok, "changed": True, **_settings_payload()}
+        return await _offload(_do)
 
     async def _set_field(self, field: str, value) -> dict:
-        values = _update_active(field, value)
-        ok = _apply_settings(values)
-        return {"success": ok, "settings": values}
+        def _do() -> dict:
+            values = _update_active(field, value)
+            return {"success": _apply_settings(values), "settings": values}
+        return await _offload(_do)
 
     async def set_intensity(self, level: int) -> dict:
         return await self._set_field(PKEY_LEVEL, max(0, min(3, int(level))))
@@ -644,14 +667,16 @@ class Plugin:
         return await self._set_field(PKEY_TP_EN, bool(enabled))
 
     async def reset_to_default(self) -> dict:
-        profiles = _load_profiles()
-        app_id = _resolve_app_id(profiles)
-        entry = profiles.setdefault(app_id, {"overwrite": app_id != DEFAULT_APP,
-                                             "settings": {}})
-        entry["settings"] = dict(DEFAULT_PROFILE)
-        _save_profiles(profiles)
-        ok = _apply_settings(entry["settings"], force=True)
-        return {"success": ok, "settings": entry["settings"]}
+        def _do() -> dict:
+            profiles = _load_profiles()
+            app_id = _resolve_app_id(profiles)
+            entry = profiles.setdefault(app_id, {"overwrite": app_id != DEFAULT_APP,
+                                                 "settings": {}})
+            entry["settings"] = dict(DEFAULT_PROFILE)
+            _save_profiles(profiles)
+            ok = _apply_settings(entry["settings"], force=True)
+            return {"success": ok, "settings": entry["settings"]}
+        return await _offload(_do)
 
     async def reapply(self) -> dict:
         """
@@ -659,16 +684,18 @@ class Plugin:
         suspend, where the controller comes back at its firmware defaults but
         the write cache still believes our values are in place.
         """
-        _forget_device()
-        values = _active_values()
-        ok = _apply_settings(values, force=True)
-        decky.logger.info(f"[lego-vibe] reapply: success={ok} values={values}")
-        return {"success": ok, "settings": values}
+        def _do() -> dict:
+            _forget_device()
+            values = _active_values()
+            ok = _apply_settings(values, force=True)
+            decky.logger.info(f"[lego-vibe] reapply: success={ok} values={values}")
+            return {"success": ok, "settings": values}
+        return await _offload(_do)
 
     # ---- Per-game profiles ------------------------------------------ #
 
     async def get_game_profiles(self) -> dict:
-        return _load_profiles()
+        return await _offload(_load_profiles)
 
     async def set_profile_overwrite(self, app_id: str, enabled: bool,
                                     name: str = "") -> dict:
@@ -676,93 +703,108 @@ class Plugin:
         app_id = str(app_id or DEFAULT_APP)
         if app_id == DEFAULT_APP:
             return {"success": False, "error": "The global profile cannot be overridden"}
-        profiles = _load_profiles()
-        entry = profiles.get(app_id)
-        if entry is None:
-            # Seed a new per-game profile from whatever is active right now.
-            entry = {"overwrite": bool(enabled), "settings": _active_values(profiles)}
-            profiles[app_id] = entry
-        else:
-            entry["overwrite"] = bool(enabled)
-            entry["settings"] = _coerce_profile(entry.get("settings"))
-        # Remember the title so the profile list is readable when the game
-        # is not running and Steam cannot resolve the id for us.
-        if name:
-            entry["name"] = str(name)
-        _save_profiles(profiles)
-        values = _active_values(profiles)
-        ok = _apply_settings(values)
-        decky.logger.info(f"[lego-vibe] per-game profile {app_id} overwrite={enabled}, applied {values}")
-        return {"success": ok, "settings": values, "overwrite": bool(enabled)}
+
+        def _do() -> dict:
+            profiles = _load_profiles()
+            entry = profiles.get(app_id)
+            if entry is None:
+                # Seed a new per-game profile from whatever is active right now.
+                entry = {"overwrite": bool(enabled), "settings": _active_values(profiles)}
+                profiles[app_id] = entry
+            else:
+                entry["overwrite"] = bool(enabled)
+                entry["settings"] = _coerce_profile(entry.get("settings"))
+            # Remember the title so the profile list is readable when the game
+            # is not running and Steam cannot resolve the id for us.
+            if name:
+                entry["name"] = str(name)
+            _save_profiles(profiles)
+            values = _active_values(profiles)
+            ok = _apply_settings(values)
+            decky.logger.info(
+                f"[lego-vibe] per-game profile {app_id} overwrite={enabled}, applied {values}")
+            return {"success": ok, "settings": values, "overwrite": bool(enabled)}
+        return await _offload(_do)
 
     async def delete_game_profile(self, app_id: str) -> dict:
         app_id = str(app_id or DEFAULT_APP)
         if app_id == DEFAULT_APP:
             return {"success": False, "error": "The global profile cannot be deleted"}
-        profiles = _load_profiles()
-        if profiles.pop(app_id, None) is None:
-            return {"success": False, "error": "No such profile"}
-        _save_profiles(profiles)
-        values = _active_values(profiles)
-        ok = _apply_settings(values)
-        decky.logger.info(f"[lego-vibe] deleted profile {app_id}")
-        return {"success": ok, "settings": values}
+
+        def _do() -> dict:
+            profiles = _load_profiles()
+            if profiles.pop(app_id, None) is None:
+                return {"success": False, "error": "No such profile"}
+            _save_profiles(profiles)
+            values = _active_values(profiles)
+            ok = _apply_settings(values)
+            decky.logger.info(f"[lego-vibe] deleted profile {app_id}")
+            return {"success": ok, "settings": values}
+        return await _offload(_do)
 
     async def set_game_profiles(self, profiles: dict) -> dict:
         """Bulk replace. Retained for compatibility with older frontends."""
         if not isinstance(profiles, dict):
             return {"success": False, "error": "profiles must be an object"}
-        _save_profiles(profiles)
+        await _offload(_save_profiles, profiles)
         return {"success": True}
 
     # ---- Driver status ---------------------------------------------- #
 
     async def get_driver_status(self) -> dict:
-        p = _get_device_path()
-        ids = _device_ids(p) if p else None
-        decky.logger.info(
-            f"[lego-vibe] get_driver_status -> path={p!r} pyudev={_PYUDEV} method={_discovery_method!r}"
-        )
-        return {
-            "found":  p is not None,
-            "paths":  [p] if p else [],
-            "method": _discovery_method or "",
-            "ids":    f"{ids[0]}:{ids[1]}" if ids else "",
-        }
+        def _do() -> dict:
+            p = _get_device_path()
+            ids = _device_ids(p) if p else None
+            decky.logger.info(
+                f"[lego-vibe] get_driver_status -> path={p!r} "
+                f"pyudev={_PYUDEV} method={_discovery_method!r}"
+            )
+            return {
+                "found":  p is not None,
+                "paths":  [p] if p else [],
+                "method": _discovery_method or "",
+                "ids":    f"{ids[0]}:{ids[1]}" if ids else "",
+            }
+        return await _offload(_do)
 
     # ---- Updates ----------------------------------------------------- #
 
     async def check_for_updates(self) -> dict:
-        return await asyncio.get_running_loop().run_in_executor(None, updater.check)
+        return await _offload(updater.check)
 
     async def perform_update(self, download_url: str, asset_name: str) -> dict:
-        return await asyncio.get_running_loop().run_in_executor(
-            None, updater.download, download_url, asset_name)
+        return await _offload(updater.download, download_url, asset_name)
 
     # ---- Test ------------------------------------------------------- #
 
     async def test_vibration(self, duration_ms: int = 500) -> dict:
         global _ff_busy
-        values = _active_values()
-        level = values[PKEY_LEVEL]
-        if level <= 0:
-            return {"success": False, "error": "Intensity is Off - raise it to feel the test"}
         if _ff_busy:
             # Dropping the request beats queueing a pile of buzzes behind a
             # slider the user is still dragging.
             return {"success": False, "error": "A vibration is already playing"}
-
-        intensity_pct = [0, 33, 66, 100][max(0, min(3, level))]
-        duration = max(100, min(2000, int(duration_ms)))
-        magnitude = int(0xFFFF * intensity_pct / 100)
-
-        ff_path = _find_ff_device()
-        if ff_path is None:
-            decky.logger.warning("[lego-vibe] test_vibration: no FF device found")
-            return {"success": False, "error": "No rumble-capable input device found"}
-
+        # Claimed before the first await: everything below yields to the event
+        # loop, so checking here and setting the flag later would let two
+        # concurrent taps both get through and stack their effects.
         _ff_busy = True
         try:
+            values = await _offload(_active_values)
+            level = values[PKEY_LEVEL]
+            if level <= 0:
+                return {"success": False,
+                        "error": "Intensity is Off - raise it to feel the test"}
+
+            intensity_pct = [0, 33, 66, 100][max(0, min(3, level))]
+            duration = max(100, min(2000, int(duration_ms)))
+            magnitude = int(0xFFFF * intensity_pct / 100)
+
+            # Probing every /dev/input/event* with an ioctl is the slow part; the
+            # effect upload and the two writes below are microseconds.
+            ff_path = await _offload(_find_ff_device)
+            if ff_path is None:
+                decky.logger.warning("[lego-vibe] test_vibration: no FF device found")
+                return {"success": False, "error": "No rumble-capable input device found"}
+
             fd = os.open(ff_path, os.O_RDWR)
             try:
                 effect_buf = bytearray(struct.pack(
