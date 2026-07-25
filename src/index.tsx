@@ -1,5 +1,6 @@
 import {
   ButtonItem,
+  findModuleExport,
   PanelSection,
   PanelSectionRow,
   Router,
@@ -136,6 +137,57 @@ const checkResult = (title: string, res: { success: boolean; error?: string }) =
   return res.success;
 };
 
+// ── Resume from suspend ───────────────────────────────────────────────────────
+
+/**
+ * Subscribe to resume-from-suspend. Returns an unsubscribe function, or null
+ * when the client offers no way to hear about it.
+ *
+ * `SteamClient.System.RegisterForOnResumeFromSuspend` was removed from the
+ * Steam client in the September 2025 beta. Optional chaining meant calling it
+ * silently did nothing - confirmed on the device, where two suspend cycles
+ * produced no reapply at all. Nothing looked broken only because the
+ * controller happened to re-enumerate and the hotplug monitor caught it; on a
+ * resume where it does not, the write cache still believes our values are in
+ * place and the controller quietly keeps the firmware defaults.
+ *
+ * The replacement lives on a SleepManager module, reachable either as a global
+ * or through the webpack exports; the legacy call stays for older clients.
+ */
+function onResumeFromSuspend(handler: () => void): (() => void) | null {
+  const asUnsub = (reg: any): (() => void) | null => {
+    if (typeof reg === "function") return reg;
+    if (typeof reg?.unregister === "function") return () => reg.unregister();
+    return null;
+  };
+  const isSleepManager = (e: any) =>
+    !!e && typeof e === "object" &&
+    (typeof e.RegisterForNotifyResumeFromSuspend === "function" ||
+      typeof e.NotifyResumeFromSuspend === "function");
+
+  try {
+    const mgr = (window as any).SleepManager ?? findModuleExport(isSleepManager);
+    const unsub = asUnsub(mgr?.RegisterForNotifyResumeFromSuspend?.(handler));
+    if (unsub) return unsub;
+  } catch (e) {
+    console.warn("[lego-vibe] SleepManager lookup failed", e);
+  }
+
+  try {
+    const unsub = asUnsub(
+      (window as any).SteamClient?.System?.RegisterForOnResumeFromSuspend?.(handler));
+    if (unsub) return unsub;
+  } catch (e) {
+    console.warn("[lego-vibe] legacy resume registration failed", e);
+  }
+
+  // Said out loud rather than swallowed: this going quiet again is exactly how
+  // the previous registration rotted unnoticed.
+  console.warn("[lego-vibe] no resume-from-suspend notification available; "
+    + "settings will only be restored if the controller re-enumerates");
+  return null;
+}
+
 // ── Running app watcher ───────────────────────────────────────────────────────
 
 type SettingsListener = (res: SettingsResponse) => void;
@@ -203,20 +255,16 @@ class AppWatcher {
       console.warn("[lego-vibe] app lifetime notifications unavailable", e);
     }
 
-    try {
-      const reg = steam?.System?.RegisterForOnResumeFromSuspend?.(() => {
-        // The controller comes back at its firmware defaults, and the
-        // backend's write cache would otherwise skip the rewrite.
-        void reapply()
-          .then((res) => {
-            if (!res.success) console.warn("[lego-vibe] reapply after resume failed");
-          })
-          .catch((e) => console.error("[lego-vibe] reapply after resume threw", e));
-      });
-      if (reg?.unregister) this.unsubs.push(() => reg.unregister());
-    } catch (e) {
-      console.warn("[lego-vibe] resume notifications unavailable", e);
-    }
+    // The controller comes back at its firmware defaults, and the backend's
+    // write cache would otherwise skip the rewrite.
+    const offResume = onResumeFromSuspend(() => {
+      void reapply()
+        .then((res) => {
+          if (!res.success) console.warn("[lego-vibe] reapply after resume failed");
+        })
+        .catch((e) => console.error("[lego-vibe] reapply after resume threw", e));
+    });
+    if (offResume) this.unsubs.push(offResume);
 
     this.timer = setInterval(() => void this.check(), 2000);
   }

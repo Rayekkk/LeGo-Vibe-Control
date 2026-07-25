@@ -660,10 +660,12 @@ class Plugin:
         global _monitor_task
         if _monitor_task:
             _monitor_task.cancel()
-            try:
-                await _monitor_task
-            except asyncio.CancelledError:
-                pass
+            # Bounded on purpose. A hotplug apply runs in a worker thread, and
+            # cancelling the task does not stop it - awaiting unbounded can
+            # outlast the five seconds the loader waits before sending SIGKILL,
+            # and a SIGKILL means _uninstall() never runs. That is how LeGoTDP
+            # left the platform profile pinned after an uninstall.
+            await asyncio.wait([_monitor_task], timeout=1.0)
             _monitor_task = None
         decky.logger.info("[lego-vibe] unloaded")
 
