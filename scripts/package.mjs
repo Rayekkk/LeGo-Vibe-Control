@@ -30,6 +30,7 @@ const zipPath = join(repoRoot, `${PLUGIN_DIR_NAME}-${version}.zip`);
 /** Runtime payload only - no sources, lockfiles, git or node_modules. */
 const CONTENTS = [
   "main.py",
+  "updater.py",
   "plugin.json",
   "package.json",
   "README.md",

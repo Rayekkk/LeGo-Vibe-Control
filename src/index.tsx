@@ -40,6 +40,11 @@ interface DriverStatus {
   ids: string;
 }
 
+interface ReadyState {
+  ready: boolean;
+  error: string;
+}
+
 interface UpdateInfo {
   current_version?: string;
   latest_version?: string;
@@ -82,6 +87,7 @@ const modeNotch = (raw: string) => MODE_NOTCHES[raw] ?? titleCase(raw).slice(0, 
 
 // ── Backend callables ─────────────────────────────────────────────────────────
 
+const isReady = callable<[], ReadyState>("is_ready");
 const getSettings = callable<[], SettingsResponse>("get_settings");
 const setActiveApp = callable<[string], SettingsResponse & { success: boolean; changed: boolean }>("set_active_app");
 
@@ -333,6 +339,7 @@ const LGoVibeControl = () => {
   const [perGameOn, setPerGameOn] = useState(false);
 
   const [loading, setLoading] = useState(true);
+  const [setupErr, setSetupErr] = useState<string | null>(null);
   const [applying, setApplying] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -374,26 +381,43 @@ const LGoVibeControl = () => {
     }
   }, []);
 
-  // Initial load
+  // Initial load. Gated on is_ready so a backend that failed to start shows the
+  // reason instead of sliders that silently do nothing.
   useEffect(() => {
-    (async () => {
+    let active = true;
+    const check = async () => {
       try {
+        const state = await isReady();
+        if (!active) return;
+        if (state.error) {
+          setSetupErr(state.error);
+          setLoading(false);
+          return;
+        }
+        if (!state.ready) {
+          setTimeout(check, 1000);
+          return;
+        }
         const [current, status, caps, ver] = await Promise.all([
           getSettings(),
           getDriverStatus(),
           getCapabilities().catch(() => ({ mode: FALLBACK_MODES } as any)),
           getVersion().catch(() => ({ version: "" })),
         ]);
+        if (!active) return;
         adoptResponse(current);
         setDriver(status);
         setModes(caps?.mode?.length ? caps.mode : FALLBACK_MODES);
         setVersion(ver.version ?? "");
+        setLoading(false);
       } catch (e) {
+        if (!active) return;
         notifyFailure("LeGo Vibe Control failed to load", e);
-      } finally {
         setLoading(false);
       }
-    })();
+    };
+    void check();
+    return () => { active = false; };
   }, [adoptResponse]);
 
   // The driver dot went stale whenever the controller was hotplugged with the
@@ -536,9 +560,19 @@ const LGoVibeControl = () => {
 
   // Render
 
+  if (setupErr) {
+    return (
+      <PanelSection title="Setup Error">
+        <PanelSectionRow>
+          <div style={styles.errorBox}>{setupErr}</div>
+        </PanelSectionRow>
+      </PanelSection>
+    );
+  }
+
   if (loading) {
     return (
-      <PanelSection>
+      <PanelSection title="Initializing...">
         <PanelSectionRow>
           <Spinner />
         </PanelSectionRow>

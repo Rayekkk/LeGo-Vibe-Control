@@ -7,21 +7,18 @@ import time
 import asyncio
 import struct
 import fcntl
-import ssl
 import threading
-import urllib.request
-import urllib.parse
-import json as _json
-import pwd
 from settings import SettingsManager
 
 # ── Optional pyudev - graceful fallback to glob if unavailable ─────────────────
 
 # Ensure bundled libs (pyudev/) are importable regardless of how Decky
 # sets up sys.path before loading this module.
-_plugin_dir = os.path.dirname(os.path.abspath(__file__))
-if _plugin_dir not in sys.path:
-    sys.path.insert(0, _plugin_dir)
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, PLUGIN_DIR)
+
+from updater import Updater  # noqa: E402 - needs the sys.path line above
 
 try:
     import pyudev as _pyudev
@@ -42,18 +39,15 @@ except Exception as _e:
 
 GITHUB_RELEASES_URL = "https://api.github.com/repos/Rayekkk/LeGo-Vibe-Control/releases/latest"
 
-# Only these hosts may be contacted by the updater. The plugin runs as root,
-# so an unrestricted download URL would be an arbitrary-fetch primitive.
-_ALLOWED_UPDATE_HOSTS = frozenset({
-    "api.github.com",
-    "github.com",
-    "codeload.github.com",
-    "objects.githubusercontent.com",
-    "release-assets.githubusercontent.com",
-})
-
-# Refuse absurd downloads. Release zips are well under a megabyte.
-_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
+# Update checks, TLS trust store and downloads live in updater.py, which is
+# kept identical in LeGoTDP so a fix lands in both plugins.
+updater = Updater(
+    releases_url=GITHUB_RELEASES_URL,
+    user_agent="lego-vibe-plugin",
+    log_prefix="[lego-vibe]",
+    plugin_dir=PLUGIN_DIR,
+    logger=decky.logger,
+)
 
 # Fallback value lists, used only when the driver does not expose the
 # matching <attr>_index file. The driver on kernel 6.18 does expose them.
@@ -92,6 +86,10 @@ settings = SettingsManager(
     name="settings",
     settings_directory=decky.DECKY_PLUGIN_SETTINGS_DIR,
 )
+
+# Profiles are read from the hotplug executor thread while RPC handlers write
+# them from the event loop. Re-entrant because the write paths load first.
+_settings_lock = threading.RLock()
 
 # Sysfs attribute unique to the hid-lenovo-go driver
 _SIGNATURE_ATTR = "rumble_intensity"
@@ -311,8 +309,9 @@ def _coerce_profile(raw: dict | None) -> dict:
 
 
 def _load_profiles() -> dict:
-    settings.read()
-    profiles = settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {}) or {}
+    with _settings_lock:
+        settings.read()
+        profiles = settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {}) or {}
     if not isinstance(profiles, dict):
         profiles = {}
     if DEFAULT_APP not in profiles:
@@ -321,8 +320,9 @@ def _load_profiles() -> dict:
 
 
 def _save_profiles(profiles: dict) -> None:
-    settings.setSetting(SETTINGS_KEY_GAME_PROFILES, profiles)
-    settings.commit()
+    with _settings_lock:
+        settings.setSetting(SETTINGS_KEY_GAME_PROFILES, profiles)
+        settings.commit()
 
 
 def _resolve_app_id(profiles: dict, app_id: str | None = None) -> str:
@@ -341,23 +341,25 @@ def _active_values(profiles: dict | None = None) -> dict:
 
 def _migrate() -> None:
     """Fold the old flat settings keys into profile '0' exactly once."""
-    settings.read()
-    if int(settings.getSetting(SETTINGS_KEY_SCHEMA, 1)) >= CURRENT_SCHEMA:
-        return
-    profiles = settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {}) or {}
-    if not isinstance(profiles, dict):
-        profiles = {}
-    if DEFAULT_APP not in profiles:
-        legacy = {
-            field: settings.getSetting(old_key, DEFAULT_PROFILE[field])
-            for field, old_key in _LEGACY_KEYS.items()
-        }
-        profiles[DEFAULT_APP] = {"overwrite": False,
-                                 "settings": _coerce_profile(legacy)}
-        decky.logger.info(f"[lego-vibe] migrated legacy settings into the global profile: {legacy}")
-    settings.setSetting(SETTINGS_KEY_GAME_PROFILES, profiles)
-    settings.setSetting(SETTINGS_KEY_SCHEMA, CURRENT_SCHEMA)
-    settings.commit()
+    with _settings_lock:
+        settings.read()
+        if int(settings.getSetting(SETTINGS_KEY_SCHEMA, 1)) >= CURRENT_SCHEMA:
+            return
+        profiles = settings.getSetting(SETTINGS_KEY_GAME_PROFILES, {}) or {}
+        if not isinstance(profiles, dict):
+            profiles = {}
+        if DEFAULT_APP not in profiles:
+            legacy = {
+                field: settings.getSetting(old_key, DEFAULT_PROFILE[field])
+                for field, old_key in _LEGACY_KEYS.items()
+            }
+            profiles[DEFAULT_APP] = {"overwrite": False,
+                                     "settings": _coerce_profile(legacy)}
+            decky.logger.info(
+                f"[lego-vibe] migrated legacy settings into the global profile: {legacy}")
+        settings.setSetting(SETTINGS_KEY_GAME_PROFILES, profiles)
+        settings.setSetting(SETTINGS_KEY_SCHEMA, CURRENT_SCHEMA)
+        settings.commit()
 
 
 def _update_active(field: str, value) -> dict:
@@ -525,118 +527,6 @@ async def _handle_device_added(sys_path: str, action: str) -> None:
     decky.logger.info(f"[lego-vibe] re-applied profile after '{action}': success={ok}")
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _real_user() -> pwd.struct_passwd | None:
-    """The plugin runs as root, so '~' is /root. Find the desktop user."""
-    return next(
-        (p for p in sorted(pwd.getpwall(), key=lambda p: p.pw_uid)
-         if p.pw_uid >= 1000 and os.path.isdir(p.pw_dir)),
-        None,
-    )
-
-
-def _xdg_download_dir(home_dir: str) -> str:
-    try:
-        with open(os.path.join(home_dir, ".config", "user-dirs.dirs")) as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("XDG_DOWNLOAD_DIR="):
-                    value = line.split("=", 1)[1].strip('"')
-                    return value.replace("$HOME", home_dir)
-    except OSError:
-        pass
-    return os.path.join(home_dir, "Downloads")
-
-
-def _plugin_version() -> str:
-    try:
-        with open(os.path.join(_plugin_dir, "plugin.json")) as f:
-            return _json.load(f).get("version", "0.0.0")
-    except (OSError, ValueError):
-        return "0.0.0"
-
-
-# Decky runs plugins inside a PyInstaller-frozen PluginLoader whose OpenSSL
-# has its CA paths baked in from the build machine. They do not exist on the
-# device, so ssl.create_default_context() comes back with an empty trust store
-# and every request dies with CERTIFICATE_VERIFY_FAILED. That is what the old
-# CERT_NONE was working around. Point the context at a real bundle instead.
-_CA_BUNDLES = (
-    "/etc/ssl/certs/ca-certificates.crt",   # Arch, SteamOS, Debian
-    "/etc/ssl/cert.pem",                    # Alpine, macOS, also present on SteamOS
-    "/etc/pki/tls/certs/ca-bundle.crt",     # Fedora, RHEL
-    "/etc/ssl/ca-bundle.pem",               # openSUSE
-)
-
-_ssl_ctx: ssl.SSLContext | None = None
-
-
-def _ssl_context() -> ssl.SSLContext:
-    global _ssl_ctx
-    if _ssl_ctx is not None:
-        return _ssl_ctx
-
-    ctx = ssl.create_default_context()
-    if ctx.cert_store_stats().get("x509_ca"):
-        decky.logger.info("[lego-vibe] TLS: using the default trust store")
-        _ssl_ctx = ctx
-        return ctx
-
-    # Prefer the OS bundle, which gets security updates, over the copy of
-    # certifi the frozen loader unpacks into a temp dir.
-    candidates = list(_CA_BUNDLES)
-    try:
-        import certifi
-        candidates.append(certifi.where())
-    except Exception:
-        pass
-
-    for path in candidates:
-        try:
-            if not path or not os.path.exists(path):
-                continue
-            ctx.load_verify_locations(cafile=path)
-            if ctx.cert_store_stats().get("x509_ca"):
-                decky.logger.info(
-                    f"[lego-vibe] TLS: default store was empty, loaded CA bundle {path} "
-                    f"({ctx.cert_store_stats()['x509_ca']} certs)"
-                )
-                _ssl_ctx = ctx
-                return ctx
-        except OSError as exc:
-            decky.logger.warning(f"[lego-vibe] TLS: cannot load {path}: {exc}")
-
-    # Verification stays on. Failing loudly beats silently trusting anything,
-    # since this runs as root and the result gets installed as a plugin.
-    decky.logger.error("[lego-vibe] TLS: no usable CA bundle found, updates will fail to verify")
-    _ssl_ctx = ctx
-    return ctx
-
-
-def _checked_url(url: str) -> str:
-    """Reject anything that is not an https URL on a known GitHub host."""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https":
-        raise ValueError(f"refusing non-https URL scheme '{parsed.scheme}'")
-    if (parsed.hostname or "").lower() not in _ALLOWED_UPDATE_HOSTS:
-        raise ValueError(f"refusing download from untrusted host '{parsed.hostname}'")
-    return url
-
-
-def _open_url(url: str, timeout: int):
-    """urlopen with certificate verification left switched on."""
-    request = urllib.request.Request(
-        _checked_url(url),
-        headers={"User-Agent": "lego-vibe-plugin"},
-    )
-    return urllib.request.urlopen(request, context=_ssl_context(), timeout=timeout)
-
-
-def _version_tuple(text: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r'\d+', text))
-
-
 # ── Plugin class ───────────────────────────────────────────────────────────────
 
 class Plugin:
@@ -647,7 +537,8 @@ class Plugin:
 
     async def _main(self):
         global _monitor_task
-        decky.logger.info(f"[lego-vibe] startup  v{_plugin_version()}  pyudev={_PYUDEV}")
+        decky.logger.info(
+            f"[lego-vibe] startup  v{updater.plugin_version()}  pyudev={_PYUDEV}")
         try:
             _migrate()
             values = _active_values()
@@ -655,7 +546,7 @@ class Plugin:
             _apply_settings(values, force=True)
             # Resolve the trust store now so the log shows up front whether
             # update checks will be able to verify certificates.
-            _ssl_context()
+            updater.ssl_context()
             _monitor_task = asyncio.create_task(_monitor_hotplug())
             Plugin._setup_error = None
         except Exception as exc:
@@ -689,7 +580,7 @@ class Plugin:
         return {"ready": Plugin._setup_error is None, "error": Plugin._setup_error or ""}
 
     async def get_version(self) -> dict:
-        return {"version": _plugin_version()}
+        return {"version": updater.plugin_version()}
 
     async def get_capabilities(self) -> dict:
         p = _get_device_path()
@@ -838,77 +729,11 @@ class Plugin:
     # ---- Updates ----------------------------------------------------- #
 
     async def check_for_updates(self) -> dict:
-        def _do() -> dict:
-            current_version = _plugin_version()
-            try:
-                with _open_url(GITHUB_RELEASES_URL, timeout=10) as resp:
-                    data = _json.loads(resp.read(_MAX_DOWNLOAD_BYTES))
-                if "tag_name" not in data:
-                    return {"current_version": current_version,
-                            "error": data.get("message", "Unexpected GitHub API response")}
-                latest = str(data["tag_name"]).lstrip("vV")
-                asset = next((a for a in data.get("assets", [])
-                              if str(a.get("name", "")).endswith(".zip")), None)
-                latest_t, current_t = _version_tuple(latest), _version_tuple(current_version)
-                update_available = (latest_t > current_t) if (latest_t and current_t) \
-                    else (latest != current_version)
-                return {
-                    "current_version":  current_version,
-                    "latest_version":   latest,
-                    "update_available": update_available,
-                    "download_url":     asset["browser_download_url"] if asset else None,
-                    "asset_name":       asset["name"] if asset else None,
-                }
-            except Exception as e:
-                decky.logger.error(f"[lego-vibe] check_for_updates: {e}")
-                return {"current_version": current_version, "error": str(e)}
-        return await asyncio.get_running_loop().run_in_executor(None, _do)
+        return await asyncio.get_running_loop().run_in_executor(None, updater.check)
 
     async def perform_update(self, download_url: str, asset_name: str) -> dict:
-        def _do() -> dict:
-            dest = None
-            try:
-                user = _real_user()
-                downloads_dir = _xdg_download_dir(user.pw_dir) if user else "/home/deck/Downloads"
-                created_dir = not os.path.isdir(downloads_dir)
-                os.makedirs(downloads_dir, exist_ok=True)
-                # If we had to create it, it is owned by root and the user
-                # would not be able to manage their own download directory.
-                if user and created_dir:
-                    os.chown(downloads_dir, user.pw_uid, user.pw_gid)
-                dest = os.path.join(downloads_dir, os.path.basename(asset_name))
-                if os.path.exists(dest):
-                    os.unlink(dest)
-
-                written = 0
-                with _open_url(download_url, timeout=60) as resp, open(dest, "wb") as f:
-                    while True:
-                        chunk = resp.read(64 * 1024)
-                        if not chunk:
-                            break
-                        written += len(chunk)
-                        if written > _MAX_DOWNLOAD_BYTES:
-                            raise ValueError("download exceeded the size limit")
-                        f.write(chunk)
-
-                # Written as root, so hand it back to the desktop user -
-                # otherwise they cannot move or delete their own download.
-                if user:
-                    os.chown(dest, user.pw_uid, user.pw_gid)
-                os.chmod(dest, 0o644)
-
-                decky.logger.info(f"[lego-vibe] update downloaded to {dest} ({written} bytes)")
-                return {"success": True, "path": dest}
-            except Exception as e:
-                decky.logger.error(f"[lego-vibe] perform_update: {e}")
-                # Never leave a truncated or oversized file behind.
-                if dest:
-                    try:
-                        os.unlink(dest)
-                    except OSError:
-                        pass
-                return {"success": False, "error": str(e)}
-        return await asyncio.get_running_loop().run_in_executor(None, _do)
+        return await asyncio.get_running_loop().run_in_executor(
+            None, updater.download, download_url, asset_name)
 
     # ---- Test ------------------------------------------------------- #
 
