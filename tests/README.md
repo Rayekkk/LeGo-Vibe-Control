@@ -44,6 +44,9 @@ LEGO_VIBE_PLUGIN_DIR=/home/deck/homebrew/plugins/LeGo-Vibe-Control \
   `echo 0003:17EF:61EB.0013 | sudo tee /sys/bus/hid/drivers/hid-lenovo-go/unbind`
   then the same into `bind`, and watching
   `journalctl -u plugin_loader | grep lego-vibe`.
-- Resume from suspend. `reapply()` is covered, but actually sleeping the
-  console is a manual check.
+- Resume from suspend. `reapply()` is covered, but the thing that calls it is
+  Steam's `RegisterForOnResumeFromSuspend` in the frontend - Decky has no
+  backend resume hook - so actually sleeping the console is a manual check.
+- `_uninstall()`. Removing the plugin is the only way to fire it; the check is
+  that vibration is back on the driver defaults afterwards.
 - The update download, which needs a newer release to exist on GitHub.

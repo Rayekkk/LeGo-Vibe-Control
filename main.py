@@ -265,10 +265,12 @@ def _write_attr(sys_path: str, rel_path: str, value: str, force: bool = False) -
 async def _offload(fn, *args):
     """Run blocking work off the event loop.
 
-    Sysfs writes, settings I/O and waiting on _apply_lock all block. Decky runs
-    every plugin on one shared event loop, so a handler that blocks here stalls
-    the whole loader - and _apply_lock can be held by the hotplug worker for as
-    long as five sysfs writes take.
+    Sysfs writes, settings I/O and waiting on _apply_lock all block. Decky gives
+    each plugin its own process and loop, so blocking here does not stall other
+    plugins - it stalls this one: every RPC the panel sends queues behind it, and
+    the hotplug monitor stops draining its netlink queue until it returns.
+    _apply_lock alone can be held by that worker for as long as five sysfs
+    writes take.
     """
     return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
 
@@ -387,6 +389,40 @@ def _settings_payload() -> dict:
         "profile_id": app_id,
         "overwrite":  app_id != DEFAULT_APP,
     }
+
+
+def _device_status() -> dict:
+    p = _get_device_path()
+    ids = _device_ids(p) if p else None
+    decky.logger.info(
+        f"[lego-vibe] driver status -> path={p!r} "
+        f"pyudev={_PYUDEV} method={_discovery_method!r}"
+    )
+    return {
+        "found":  p is not None,
+        "paths":  [p] if p else [],
+        "method": _discovery_method or "",
+        "ids":    f"{ids[0]}:{ids[1]}" if ids else "",
+    }
+
+
+async def _emit_device_state() -> None:
+    """Push the driver status and the live profile to the panel.
+
+    A controller is plugged, unplugged or re-bound with the Quick Access Menu
+    shut far more often than with it open. Before this the panel kept showing
+    whatever it happened to see the last time it was opened, so the status dot
+    could sit on red with the device working perfectly.
+    """
+    def _do() -> tuple[dict, dict]:
+        return _device_status(), _settings_payload()
+
+    try:
+        status, payload = await _offload(_do)
+        await decky.emit("device", status)
+        await decky.emit("settings", payload)
+    except Exception as exc:
+        decky.logger.warning(f"[lego-vibe] could not emit device state: {exc}")
 
 
 def _update_active(field: str, value) -> dict:
@@ -512,6 +548,7 @@ async def _monitor_hotplug() -> None:
                 else:
                     decky.logger.info("[lego-vibe] device disconnected")
                     _forget_device()
+                    await _emit_device_state()
     except asyncio.CancelledError:
         pass
     finally:
@@ -552,6 +589,7 @@ async def _handle_device_added(sys_path: str, action: str) -> None:
 
     ok = await asyncio.get_running_loop().run_in_executor(None, _apply)
     decky.logger.info(f"[lego-vibe] re-applied profile after '{action}': success={ok}")
+    await _emit_device_state()
 
 
 # ── Plugin class ───────────────────────────────────────────────────────────────
@@ -562,13 +600,25 @@ class Plugin:
     # instead of leaving the user with sliders that silently do nothing.
     _setup_error: str | None = None
 
+    async def _migration(self):
+        """Fold the pre-1.5.0 flat keys into profile '0', before anything reads
+        the store.
+
+        This is the loader's own hook for the job: it runs to completion before
+        _main() is even scheduled, so no profile read can race the migration.
+
+        decky.migrate_settings() does not fit here - it relocates files as they
+        are, whereas this rewrites keys inside a file that is already in the
+        right place.
+        """
+        await _offload(_migrate)
+
     async def _main(self):
         global _monitor_task
         decky.logger.info(
             f"[lego-vibe] startup  v{updater.plugin_version()}  pyudev={_PYUDEV}")
         try:
             def _start() -> None:
-                _migrate()
                 values = _active_values()
                 decky.logger.info(f"[lego-vibe] applying global profile: {values}")
                 _apply_settings(values, force=True)
@@ -593,15 +643,20 @@ class Plugin:
             _monitor_task = None
         decky.logger.info("[lego-vibe] unloaded")
 
-    # Decky calls these around system sleep on loader versions that support
-    # them. The frontend also calls reapply() on resume, and both paths are
-    # idempotent, so it does not matter which one fires.
-    async def _suspend(self):
-        decky.logger.info("[lego-vibe] suspending")
+    async def _uninstall(self):
+        """Put the controller back on the driver defaults.
 
-    async def _resume(self):
-        decky.logger.info("[lego-vibe] resumed, re-applying")
-        await self.reapply()
+        The sysfs values live in the driver, not in the plugin, so uninstalling
+        while intensity is 'off' would otherwise leave a silent controller and
+        nothing installed to turn it back on.
+
+        Runs after _unload(), which cancels the hotplug monitor - though not any
+        apply already running in a worker thread. _apply_settings serialises on
+        _apply_lock, so the two cannot interleave and leave the hardware holding
+        half of each profile.
+        """
+        await _offload(_apply_settings, dict(DEFAULT_PROFILE), None, True)
+        decky.logger.info("[lego-vibe] uninstalled, restored default vibration settings")
 
     # ---- RPC surface ------------------------------------------------ #
 
@@ -683,6 +738,10 @@ class Plugin:
         Force every attribute back onto the hardware. Used after resume from
         suspend, where the controller comes back at its firmware defaults but
         the write cache still believes our values are in place.
+
+        Driven from the frontend, off Steam's own resume notification: Decky has
+        no backend resume hook, the loader only ever invokes _migration, _main,
+        _unload and _uninstall.
         """
         def _do() -> dict:
             _forget_device()
@@ -752,20 +811,7 @@ class Plugin:
     # ---- Driver status ---------------------------------------------- #
 
     async def get_driver_status(self) -> dict:
-        def _do() -> dict:
-            p = _get_device_path()
-            ids = _device_ids(p) if p else None
-            decky.logger.info(
-                f"[lego-vibe] get_driver_status -> path={p!r} "
-                f"pyudev={_PYUDEV} method={_discovery_method!r}"
-            )
-            return {
-                "found":  p is not None,
-                "paths":  [p] if p else [],
-                "method": _discovery_method or "",
-                "ids":    f"{ids[0]}:{ids[1]}" if ids else "",
-            }
-        return await _offload(_do)
+        return await _offload(_device_status)
 
     # ---- Updates ----------------------------------------------------- #
 

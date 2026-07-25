@@ -1,4 +1,5 @@
 """Backend tests that need no Legion Go attached. These run in CI."""
+import asyncio
 import json
 import os
 import ssl
@@ -9,6 +10,7 @@ from _harness import (
     FIXTURE,
     GAME_WITHOUT_OVERRIDE,
     GAME_WITH_OVERRIDE,
+    emitted,
     main,
     seed,
     updater,
@@ -75,6 +77,14 @@ class Migration(unittest.TestCase):
         seed({})
         main._migrate()
         self.assertEqual(main._active_values(), main.DEFAULT_PROFILE)
+
+    def test_the_lifecycle_hook_runs_the_migration(self):
+        # Decky runs _migration() to completion before it even schedules _main(),
+        # which is the guarantee we want: no profile read can outrun it.
+        seed({"intensity_level": 3, "rumble_mode": 2,
+              "touchpad_intensity": 1, "touchpad_enabled": False})
+        asyncio.run(main.Plugin()._migration())
+        self.assertEqual(main._active_values()["level"], 3)
 
 
 class ProfileResolution(unittest.TestCase):
@@ -155,6 +165,54 @@ class Versions(unittest.TestCase):
     def test_plugin_version_matches_the_manifest(self):
         with open(os.path.join(main.PLUGIN_DIR, "plugin.json")) as handle:
             self.assertEqual(main.updater.plugin_version(), json.load(handle)["version"])
+
+    def test_the_loaders_version_wins_over_the_manifest(self):
+        # PluginWrapper takes the version from package.json, so that is what
+        # Decky's own plugin list shows. Preferring it here keeps the panel from
+        # contradicting the loader if the two manifests ever drift.
+        os.environ["DECKY_PLUGIN_VERSION"] = "9.9.9"
+        try:
+            self.assertEqual(main.updater.plugin_version(), "9.9.9")
+        finally:
+            del os.environ["DECKY_PLUGIN_VERSION"]
+
+    def test_the_two_manifests_agree(self):
+        # Nothing enforces this at runtime: the loader reads one file and the
+        # packaging script reads the other.
+        with open(os.path.join(main.PLUGIN_DIR, "plugin.json")) as handle:
+            plugin_json = json.load(handle)["version"]
+        with open(os.path.join(main.PLUGIN_DIR, "package.json")) as handle:
+            package_json = json.load(handle)["version"]
+        self.assertEqual(plugin_json, package_json)
+
+
+class DeviceEvents(unittest.IsolatedAsyncioTestCase):
+    """Hotplug happens with the Quick Access Menu shut more often than not, so
+    the backend pushes the new state instead of waiting to be asked."""
+
+    def setUp(self):
+        seed(FIXTURE)
+        emitted.clear()
+
+    async def test_both_halves_of_the_panel_are_pushed(self):
+        await main._emit_device_state()
+        self.assertEqual([name for name, _ in emitted], ["device", "settings"])
+
+    async def test_the_status_payload_matches_the_rpc(self):
+        # The panel adopts either interchangeably, so the two have to agree.
+        await main._emit_device_state()
+        self.assertEqual(dict(emitted)["device"][0],
+                         await main.Plugin().get_driver_status())
+
+    async def test_the_settings_payload_carries_the_resolved_profile(self):
+        main._active_app_id = GAME_WITH_OVERRIDE
+        try:
+            await main._emit_device_state()
+            payload = dict(emitted)["settings"][0]
+            self.assertEqual(payload["settings"], main._active_values())
+            self.assertEqual(payload["profile_id"], GAME_WITH_OVERRIDE)
+        finally:
+            main._active_app_id = main.DEFAULT_APP
 
 
 class DeviceIdParsing(unittest.TestCase):

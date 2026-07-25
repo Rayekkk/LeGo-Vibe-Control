@@ -8,7 +8,14 @@ import {
   staticClasses,
   ToggleField,
 } from "@decky/ui";
-import { callable, definePlugin, toaster, useQuickAccessVisible } from "@decky/api";
+import {
+  addEventListener,
+  callable,
+  definePlugin,
+  removeEventListener,
+  toaster,
+  useQuickAccessVisible,
+} from "@decky/api";
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -432,8 +439,24 @@ const LGoVibeControl = () => {
     return () => { active = false; };
   }, [adoptResponse]);
 
-  // The driver dot went stale whenever the controller was hotplugged with the
-  // panel closed, so re-check every time the panel is opened.
+  // Hotplug pushes both of these from the backend, so the dot and the sliders
+  // stay right even while the panel is shut. Registered unconditionally: a
+  // controller is plugged in with the Quick Access Menu closed far more often
+  // than with it open, and adopting the state on arrival beats discovering it
+  // on the next open.
+  useEffect(() => {
+    const onDevice = (status: DriverStatus) => setDriver(status);
+    addEventListener<[DriverStatus]>("device", onDevice);
+    addEventListener<[SettingsResponse]>("settings", adoptResponse);
+    return () => {
+      removeEventListener<[DriverStatus]>("device", onDevice);
+      removeEventListener<[SettingsResponse]>("settings", adoptResponse);
+    };
+  }, [adoptResponse]);
+
+  // Still re-checked on open, as the backstop for the cases no event covers:
+  // without pyudev there is no hotplug monitor at all, and a plugin reload
+  // starts with whatever the hardware already is.
   useEffect(() => {
     if (visible && !loading) void refreshDriver();
   }, [visible, loading, refreshDriver]);
