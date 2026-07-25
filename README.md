@@ -65,7 +65,7 @@ To copy the files directly instead, install only the runtime payload - copying t
 ```bash
 DEST=~/homebrew/plugins/LeGo-Vibe-Control
 sudo mkdir -p "$DEST"
-sudo cp -r main.py plugin.json package.json README.md LICENSE NOTICE dist pyudev "$DEST"
+sudo cp -r main.py updater.py plugin.json package.json README.md LICENSE NOTICE dist pyudev "$DEST"
 sudo systemctl restart plugin_loader
 ```
 
@@ -159,7 +159,9 @@ npm run package     # build the release zip
 
 The frontend is built with [`@decky/rollup`](https://www.npmjs.com/package/@decky/rollup), the official Decky preset, which maps `react`, `react/jsx-runtime`, `react-dom` and `@decky/ui` onto the globals Steam injects rather than bundling them.
 
-CI builds every push and pull request. Pushing a tag such as `1.4.0` builds the zip and publishes a GitHub release; the tag must match the `version` in both `plugin.json` and `package.json`.
+`updater.py` is shared verbatim with [LeGoTDP](https://github.com/Rayekkk/LeGoTDP) - change it in one repo and copy it to the other.
+
+CI builds every push and pull request. Pushing a tag such as `1.5.0` builds the zip and publishes a GitHub release; the tag must match the `version` in both `plugin.json` and `package.json`.
 
 ---
 
