@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: BSD-3-Clause AND MIT
+# Copyright (c) 2026 Rayekkk
+# Portions copyright (c) 2026 piyush-tyagi-13 and M4ttiA, MIT - see LICENSE.MIT
+# https://github.com/Rayekkk/LeGo-Vibe-Control
+
 import decky
 import copy
 import os

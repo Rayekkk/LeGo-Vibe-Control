@@ -35,6 +35,7 @@ const CONTENTS = [
   "package.json",
   "README.md",
   "LICENSE",
+  "LICENSE.MIT",
   "NOTICE",
   "dist",
   "pyudev",

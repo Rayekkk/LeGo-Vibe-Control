@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 Rayekkk
+# https://github.com/Rayekkk/LeGo-Vibe-Control
+
 """Tests that need a real Legion Go with hid-lenovo-go bound.
 
 They skip themselves when the sysfs endpoint is absent, so the same

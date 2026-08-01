@@ -1,7 +1,29 @@
 LeGo Vibe Control
 Copyright (c) 2026 Rayekkk
 
-This product is licensed under the MIT License. See LICENSE for the full text.
+This product is licensed under the BSD 3-Clause License. See LICENSE for the
+full text. Parts of it are inherited from an earlier MIT-licensed project and
+stay under those terms - see Provenance below, and LICENSE.MIT.
+
+================================================================================
+Provenance
+================================================================================
+
+This plugin began as Ally Vibe Control by piyush-tyagi-13
+(https://github.com/piyush-tyagi-13/ally-vibe-control, MIT) and was ported to
+the Lenovo Legion Go in May 2026. M4ttiA contributed the per-game profiles
+while the project was still under MIT.
+
+Most of what is here now was written after that port and is under the BSD
+3-Clause License. Code inherited from the earlier work survives in main.py,
+src/index.tsx, README.md, package.json and plugin.json, and remains under the
+MIT License, whose text and copyright notices are kept verbatim in LICENSE.MIT.
+MIT permits this sublicensing precisely so long as its notice travels with the
+code, so both licence files ship together and both must be kept by anyone
+redistributing this plugin.
+
+Files carrying no inherited code - lego_updater.py, everything under tests/,
+the build configuration and the workflow - are BSD 3-Clause alone.
 
 ================================================================================
 Third-party components distributed with this plugin
@@ -23,10 +45,10 @@ bundled pyudev source file. The full text is also available at:
 https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
 
 Because pyudev is used as an unmodified, dynamically imported library and is
-redistributed in its original source form, the plugin's own source remains
-under the MIT License. Anyone redistributing this plugin must keep this
-notice and the pyudev license headers intact, and may replace the bundled
-pyudev with their own copy.
+redistributed in its original source form, the plugin's own source keeps the
+terms set out above. Anyone redistributing this plugin must keep this notice
+and the pyudev license headers intact, and may replace the bundled pyudev
+with their own copy.
 
 The plugin degrades gracefully to a sysfs glob scan when pyudev cannot be
 imported, so removing the bundled copy does not break core functionality -

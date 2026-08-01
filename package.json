@@ -2,7 +2,7 @@
   "name": "lego-vibe-control",
   "version": "1.5.0",
   "description": "Vibration intensity, mode and touchpad haptics control for the Lenovo Legion Go and Legion Go 2",
-  "license": "MIT",
+  "license": "BSD-3-Clause AND MIT",
   "type": "module",
   "scripts": {
     "build": "rollup -c",

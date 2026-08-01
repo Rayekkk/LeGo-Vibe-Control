@@ -65,7 +65,7 @@ To copy the files directly instead, install only the runtime payload - copying t
 ```bash
 DEST=~/homebrew/plugins/LeGo-Vibe-Control
 sudo mkdir -p "$DEST"
-sudo cp -r main.py lego_updater.py plugin.json package.json README.md LICENSE NOTICE dist pyudev "$DEST"
+sudo cp -r main.py lego_updater.py plugin.json package.json README.md LICENSE LICENSE.MIT NOTICE dist pyudev "$DEST"
 sudo systemctl restart plugin_loader
 ```
 
@@ -174,7 +174,11 @@ CI builds every push and pull request. Pushing a tag such as `1.5.0` builds the 
 
 ## License
 
-MIT - see [LICENSE](LICENSE). Third-party components are listed in [NOTICE](NOTICE).
+BSD 3-Clause - see [LICENSE](LICENSE). This plugin is derived from
+[Ally Vibe Control](https://github.com/piyush-tyagi-13/ally-vibe-control) by
+piyush-tyagi-13; the parts inherited from it stay under the MIT License, kept in
+[LICENSE.MIT](LICENSE.MIT). Provenance and third-party components are set out in
+[NOTICE](NOTICE).
 
 ---
 
