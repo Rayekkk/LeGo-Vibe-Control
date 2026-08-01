@@ -14,7 +14,7 @@
       "hardware",
       "controller"
     ],
-    "description": "Control vibration intensity and mode on the Lenovo Legion Go and Legion Go 2. Five rumble patterns, per-game profiles, and touchpad haptics. Uses the hid-lenovo-go kernel driver (Kernel 6.18+ / SteamOS 3.8+) and persists settings across reboots. The Legion Go S is not supported: its driver does not expose vibration control.",
-    "image": ""
+    "description": "Controller vibration and touchpad haptics from the Steam overlay. Five rumble patterns, per-game profiles.",
+    "image": "https://raw.githubusercontent.com/Rayekkk/LeGo-Vibe-Control/main/docs/logo.png"
   }
 }
